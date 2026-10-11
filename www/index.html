@@ -18,6 +18,17 @@
       </div>
       <div id="error" hidden></div>
 
+      <!-- phase 2: a small meter over the arm instead of the full-screen coach -->
+      <div id="trainer" hidden>
+        <div class="t-top"><span id="trainer-what"></span><span id="trainer-trial" class="mono"></span></div>
+        <div class="t-meter"><div class="t-fill"></div><div class="t-center"></div></div>
+        <div class="t-hold"><div></div></div>
+        <div class="t-bottom">
+          <span id="trainer-hint"></span>
+          <span><button id="trainer-skip" class="small">Skip finger</button> <button id="trainer-stop" class="small">Stop · Esc</button></span>
+        </div>
+      </div>
+
       <div id="coach" hidden>
         <div class="card">
           <div class="top">
@@ -33,6 +44,11 @@
           <div id="coach-live">
             <span id="coach-live-label"></span>
             <div class="bar"><div class="fill"></div><div class="floor"></div></div>
+          </div>
+          <div id="fbar" hidden>
+            <span id="fbar-label"></span>
+            <div class="ftrack big"></div>
+            <div id="fbar-legend"></div>
           </div>
           <button id="coach-skip" class="small" hidden>Skip this step</button>
           <div id="coach-timeline"></div>
@@ -65,6 +81,7 @@
           <button id="reset" title="Arm to its home pose, box back on the table">Reset</button>
           <button id="clear-trail">Clear trail</button>
         </div>
+        <label class="check"><input type="checkbox" id="drift" checked> Drift home when idle <small>(EMG: a joint left alone for 1.5 s eases back)</small></label>
       </section>
 
       <section>
@@ -96,6 +113,15 @@
       </section>
 
       <section>
+        <h2>Control scheme</h2>
+        <div class="seg" id="scheme">
+          <button data-scheme="muscle" class="active">Muscle pairs</button>
+          <button data-scheme="finger">Finger grid</button>
+        </div>
+        <p class="hint" id="scheme-hint"></p>
+      </section>
+
+      <section class="muscle-only">
         <h2>Calibration</h2>
         <div class="row">
           <button id="cal-all">Full calibration</button>
@@ -104,12 +130,25 @@
         <div id="cal-status" class="hint">Uncalibrated, using default levels. Full calibration takes about a minute and guides you through each movement.</div>
       </section>
 
+      <section class="finger-only">
+        <h2>Finger control</h2>
+        <div class="row">
+          <button id="fcal" class="primary">Calibrate + train</button>
+          <button id="ftrain">Train only</button>
+        </div>
+        <div id="fcal-status" class="hint"></div>
+        <div id="fposture" class="kv mono"></div>
+        <label class="check"><input type="checkbox" id="fsimple" checked autocomplete="off"> Simple bands <small>rest under ¼ · − from ¼ to ½ · + over ½, no ceiling</small></label>
+        <div id="fingers"></div>
+        <label class="field">Speed <input type="range" id="fspeed" min="0.1" max="1" step="0.05" value="0.5"><span id="fspeed-val" class="mono"></span></label>
+      </section>
+
       <section>
         <h2>EMG channels</h2>
         <div id="channels"></div>
       </section>
 
-      <section>
+      <section class="muscle-only">
         <h2>Decoder</h2>
         <div class="seg" id="decoder">
           <button data-mode="pattern" class="active">Pattern · all channels</button>
@@ -118,7 +157,7 @@
         <p class="hint" id="decoder-hint"></p>
       </section>
 
-      <section>
+      <section class="muscle-only">
         <h2>Mapping</h2>
         <p class="hint">Which movement (electrode site) drives each joint direction.</p>
         <table id="mapping">
@@ -133,7 +172,7 @@
 
   <div id="guide" hidden>
     <figure>
-      <img src="electrodes.svg" alt="Electrode placement on the arm and wiring to the Cyton pin header">
+      <img id="guide-img" src="electrodes.svg" alt="Electrode placement on the arm and wiring to the Cyton pin header">
       <figcaption>Click anywhere or press Esc to close</figcaption>
     </figure>
   </div>

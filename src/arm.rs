@@ -49,6 +49,10 @@ pub const JOINTS: [JointSpec; NUM_JOINTS] = [
 
 const HOME: [f32; NUM_JOINTS] = [deg(0.0), deg(25.0), deg(-60.0), deg(-35.0)];
 
+/// Idle drift back to the home pose: speed proportional to the distance, capped.
+const DRIFT_GAIN: f32 = 2.0;
+const DRIFT_MAX_SPEED: f32 = deg(6.0);
+
 /// World-space frames of each joint (origin at the joint, link along +Y).
 pub struct Frames {
     /// Vertical yaw axis at the wall (frame Y is vertical, X points out of the wall at q0 = 0).
@@ -91,6 +95,12 @@ impl Arm {
 
     pub fn velocity(&self, joint: usize) -> f32 {
         self.vel[joint]
+    }
+
+    /// Velocity command (-1..1) that eases an idle joint back towards home.
+    pub fn drift_input(&self, joint: usize) -> f32 {
+        let v = (DRIFT_GAIN * (HOME[joint] - self.q[joint])).clamp(-DRIFT_MAX_SPEED, DRIFT_MAX_SPEED);
+        v / JOINTS[joint].max_speed
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -186,6 +196,25 @@ mod tests {
         }
         // well inside the 4.5 cm grab distance even on a 5° grid
         assert!(best < 0.025, "closest claw-down approach to the box: {best} m");
+    }
+
+    #[test]
+    fn drift_eases_back_to_home_slowly() {
+        let mut arm = Arm::new();
+        arm.q[2] = HOME[2] + deg(40.0);
+        let start = arm.q[2];
+        for _ in 0..60 {
+            arm.set_input(2, arm.drift_input(2));
+            arm.step(1.0 / 60.0);
+        }
+        // at most ~6°/s for one second
+        let moved = start - arm.q[2];
+        assert!(moved > deg(4.0) && moved < deg(6.5), "moved {}°", moved.to_degrees());
+        for _ in 0..60 * 30 {
+            arm.set_input(2, arm.drift_input(2));
+            arm.step(1.0 / 60.0);
+        }
+        assert!((arm.q[2] - HOME[2]).abs() < deg(0.5));
     }
 
     #[test]

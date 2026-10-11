@@ -13,6 +13,7 @@ use arm::{Arm, JOINTS, NUM_JOINTS};
 use emg::{
     cyton::CytonParser,
     decoder::Label,
+    finger::{self, Band, FingerControl, Meter, NUM_FINGERS},
     pipeline::{CalStep, Check, EmgPipeline, Phase},
 };
 use render::{camera::OrbitCamera, Renderer};
@@ -20,6 +21,18 @@ use world::World;
 
 const TRAIL_MAX: usize = 1500;
 const TRAIL_MIN_STEP: f32 = 0.003;
+/// A joint left without a command this long starts drifting back home.
+const DRIFT_DELAY_S: f32 = 1.5;
+
+fn band_code(b: Band) -> u8 {
+    match b {
+        Band::Rest => 0,
+        Band::Pending => 1,
+        Band::Minus => 2,
+        Band::Plus => 3,
+        Band::Over => 4,
+    }
+}
 
 /// JS encoding of a calibration step: -1 = rest, otherwise the channel.
 fn step_code(step: CalStep) -> i32 {
@@ -49,6 +62,12 @@ pub struct App {
     use_emg: bool,
     parser: CytonParser,
     emg: EmgPipeline,
+    /// Finger-grid control (instead of muscle pairs) when `finger_mode` is on.
+    fingers: FingerControl,
+    finger_mode: bool,
+    drift: bool,
+    /// Seconds each joint has been without a command.
+    idle: [f32; NUM_JOINTS],
     trail: Vec<Vec3>,
 }
 
@@ -66,6 +85,10 @@ impl App {
             use_emg: false,
             parser: CytonParser::new(),
             emg: EmgPipeline::new(),
+            fingers: FingerControl::new(),
+            finger_mode: false,
+            drift: true,
+            idle: [0.0; NUM_JOINTS],
             trail: Vec::new(),
         })
     }
@@ -87,13 +110,25 @@ impl App {
     /// Advance the simulation by `dt` seconds and draw a frame.
     pub fn frame(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 0.1);
-        // Hold the arm still while a calibration is asking for pulses.
+        // Hold the arm still while a muscle calibration is asking for pulses (the
+        // finger control decides that itself: still in phase 1, one joint in phase 2).
         let calibrating = self.emg.calibration_status().is_some();
-        let inputs = match (self.use_emg, calibrating) {
-            (false, _) => self.manual,
-            (true, false) => self.emg.joint_inputs(),
-            (true, true) => [0.0; NUM_JOINTS],
+        let mut inputs = match (self.use_emg, self.finger_mode, calibrating) {
+            (false, ..) => self.manual,
+            (true, true, _) => self.fingers.joint_inputs(),
+            (true, false, false) => self.emg.joint_inputs(),
+            (true, false, true) => [0.0; NUM_JOINTS],
         };
+        for (j, v) in inputs.iter_mut().enumerate() {
+            if *v != 0.0 || !(self.use_emg && self.drift) {
+                self.idle[j] = 0.0;
+                continue;
+            }
+            self.idle[j] += dt;
+            if self.idle[j] >= DRIFT_DELAY_S {
+                *v = self.arm.drift_input(j);
+            }
+        }
         for (j, v) in inputs.into_iter().enumerate() {
             self.arm.set_input(j, v);
         }
@@ -168,13 +203,25 @@ impl App {
 
     /// Feed raw bytes from the Cyton serial stream.
     pub fn push_serial(&mut self, bytes: &[u8]) {
-        self.parser.push(bytes, |s| self.emg.process(s));
+        let (emg, fingers, finger_mode) = (&mut self.emg, &mut self.fingers, self.finger_mode);
+        self.parser.push(bytes, |s| {
+            emg.process(s);
+            if finger_mode {
+                fingers.process(&emg.envelopes(), &emg.contact());
+            }
+        });
     }
 
     /// Call when (re)connecting: clears parser and filter state, keeps calibration.
     pub fn reset_stream(&mut self) {
         self.parser.reset();
         self.emg.reset_filters();
+        self.fingers.reset_state();
+    }
+
+    /// Ease idle joints back to the home pose under EMG control.
+    pub fn set_drift(&mut self, on: bool) {
+        self.drift = on;
     }
 
     /// [packets, dropped, resyncs]
@@ -346,5 +393,191 @@ impl App {
 
     pub fn set_mains(&mut self, hz: f32) {
         self.emg.set_mains(hz);
+    }
+
+    // ---- finger grid ------------------------------------------------------
+
+    /// Finger-grid control (on) or muscle pairs (off).
+    pub fn set_finger_mode(&mut self, on: bool) {
+        if on != self.finger_mode {
+            self.fingers.cancel();
+            self.fingers.reset_state();
+            self.emg.cancel_calibration();
+        }
+        self.finger_mode = on;
+    }
+
+    /// Phase 1 for every finger, then phase 2 if `train_after`.
+    pub fn finger_calibrate(&mut self, train_after: bool) {
+        self.fingers.start_calibration(train_after);
+    }
+
+    /// Phase 1 for one finger (keeps the rest level), then its training if `train_after`.
+    pub fn finger_calibrate_one(&mut self, finger: usize, train_after: bool) {
+        self.fingers.start_finger(finger, train_after);
+    }
+
+    /// Phase 2 only, for every calibrated finger.
+    pub fn finger_train(&mut self) {
+        self.fingers.start_training();
+    }
+
+    pub fn finger_cancel(&mut self) {
+        self.fingers.cancel();
+    }
+
+    pub fn finger_skip(&mut self) {
+        self.fingers.skip();
+    }
+
+    pub fn finger_trained(&self) -> bool {
+        self.fingers.trained()
+    }
+
+    /// Empty when idle, otherwise
+    /// [0 step (0 rest, 1 hard, 2 medium, 3 faint, 4 train), 1 finger (-1 = none),
+    ///  2 phase (0 prepare, 1 record / trial, 2 relax), 3 phase progress 0..1, 4 seconds left,
+    ///  5 check (-1 none, 0 clean, 1 no contact, 2 moving, 3 too weak, 4 too strong,
+    ///    5 other finger, 6 not relaxed, 7 above the faint box), 6 check argument
+    ///    (channel / finger, -1 = n/a),
+    ///  7 seconds without progress, 8 meter kind (0 activity, 1 fraction of hard,
+    ///    2 power, 3 stillness), 9 meter, 10 target low, 11 target high (NaN = none),
+    ///  12 segment, 13 segments, 14 round, 15 rounds (0 = n/a),
+    ///  16 goal band (-1 none, 2 faint −, 3 firmer +),
+    ///  17 training aim: the level to get as close to as possible (NaN otherwise),
+    ///  18 rest posture (0 limp, 1 forearm raised, 2 arm unsupported; -1 = not a rest step)].
+    pub fn finger_status(&self) -> Vec<f32> {
+        use finger::{Check as C, Phase as P, Step as S};
+        let Some(s) = self.fingers.status() else { return Vec::new() };
+        let posture = match s.step {
+            S::Rest(p) => p as f32,
+            _ => -1.0,
+        };
+        let (step, finger) = match s.step {
+            S::Rest(_) => (0.0, -1.0),
+            S::Hard(f) => (1.0, f as f32),
+            S::Medium(f) => (2.0, f as f32),
+            S::Faint(f, _) => (3.0, f as f32),
+            S::Train(f) => (4.0, f as f32),
+        };
+        let phase = match s.phase {
+            P::Prepare => 0.0,
+            P::Record => 1.0,
+            P::Relax => 2.0,
+        };
+        let (check, arg) = match s.check {
+            None => (-1.0, -1.0),
+            Some(C::Clean) => (0.0, -1.0),
+            Some(C::NoContact(c)) => (1.0, c as f32),
+            Some(C::Moving(c)) => (2.0, c as f32),
+            Some(C::TooWeak) => (3.0, -1.0),
+            Some(C::TooStrong) => (4.0, -1.0),
+            Some(C::OtherFinger(g)) => (5.0, g as f32),
+            Some(C::NotRelaxed(c)) => (6.0, c as f32),
+            Some(C::Fainter) => (7.0, -1.0),
+        };
+        let meter = match s.meter_kind {
+            Meter::Activity => 0.0,
+            Meter::OfHard => 1.0,
+            Meter::Power => 2.0,
+            Meter::Stillness => 3.0,
+        };
+        vec![
+            step,
+            finger,
+            phase,
+            s.phase_progress,
+            s.seconds_left,
+            check,
+            arg,
+            s.stuck_seconds,
+            meter,
+            s.meter as f32,
+            s.target.0 as f32,
+            s.target.1 as f32,
+            s.segment as f32,
+            s.segments as f32,
+            s.round as f32,
+            s.rounds as f32,
+            s.goal.map_or(-1.0, |b| f32::from(band_code(b))),
+            s.aim as f32,
+            posture,
+        ]
+    }
+
+    /// Current arm posture as the share of each recorded rest posture
+    /// [limp, forearm raised, arm unsupported]; empty before calibration.
+    pub fn finger_posture(&self) -> Vec<f32> {
+        self.fingers.posture().iter().map(|&m| m as f32).collect()
+    }
+
+    /// Decoded power per finger (0 = rest, 1 = ceiling).
+    pub fn finger_powers(&self) -> Vec<f32> {
+        self.fingers.powers().iter().map(|&p| p as f32).collect()
+    }
+
+    /// Per finger: 0 rest, 1 faint (not committed yet), 2 faint −, 3 firmer +, 4 over the ceiling.
+    pub fn finger_states(&self) -> Vec<u8> {
+        self.fingers.band_states().map(band_code).to_vec()
+    }
+
+    /// Per finger: [stasis, rest exit, level (faint target), split, plus enter, plus exit, plus target].
+    pub fn finger_bands(&self) -> Vec<f32> {
+        (0..NUM_FINGERS)
+            .flat_map(|f| {
+                let b = self.fingers.bands(f);
+                [b.stasis, b.rest_exit, b.level, b.split, b.plus_enter, b.plus_exit, b.plus_target].map(|v| v as f32)
+            })
+            .collect()
+    }
+
+    /// Per finger: [calibrated, faintest level, faint rounds, isolation, hits, trials,
+    /// faint target, stasis, firmer target, where the person's faint and firm
+    /// average in raw power (0 = not measured), smoothing in ms, faint rounds
+    /// that looked like another finger].
+    pub fn finger_report(&self) -> Vec<f32> {
+        self.fingers
+            .report()
+            .iter()
+            .flat_map(|r| {
+                [
+                    f32::from(u8::from(r.calibrated)),
+                    r.faint as f32,
+                    r.rounds as f32,
+                    r.isolation as f32,
+                    r.hits as f32,
+                    r.trials as f32,
+                    r.level as f32,
+                    r.stasis as f32,
+                    r.firm as f32,
+                    r.held[0] as f32,
+                    r.held[1] as f32,
+                    (r.smoothing_s * 1000.0) as f32,
+                    r.mixed as f32,
+                ]
+            })
+            .collect()
+    }
+
+    pub fn set_finger_joint(&mut self, finger: usize, joint: usize) {
+        self.fingers.set_joint(finger, joint);
+    }
+
+    pub fn finger_joints(&self) -> Vec<u8> {
+        self.fingers.joints().map(|j| j as u8).to_vec()
+    }
+
+    /// Simple fixed bands (rest < ¼ < − < ½ < +, no ceiling) or the adaptive ones.
+    pub fn set_finger_simple_bands(&mut self, on: bool) {
+        self.fingers.set_simple_bands(on);
+    }
+
+    pub fn finger_simple_bands(&self) -> bool {
+        self.fingers.simple_bands
+    }
+
+    /// Joint speed (fraction of its max) while a finger holds a band.
+    pub fn set_finger_speed(&mut self, value: f32) {
+        self.fingers.speed = value.clamp(0.05, 1.0);
     }
 }

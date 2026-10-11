@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1320 730" width="1320" height="730" font-family="system-ui, 'Segoe UI', sans-serif">
+  <title>Finger grid electrode placement and Cyton wiring</title>
+  <defs>
+    <g id="el">
+      <circle r="9" fill="#f2f3f5" stroke-width="3"/>
+      <circle r="3" fill="#8a8f98" stroke="none"/>
+    </g>
+    <g id="pad">
+      <circle r="17" fill="#ffffff10" stroke="#ffffff30" stroke-dasharray="3 3"/>
+    </g>
+  </defs>
+
+  <rect width="1320" height="730" fill="#1a1c21"/>
+
+  <text x="30" y="42" font-size="20" font-weight="600" fill="#e3e6eb">Finger grid · right forearm, palm up</text>
+  <text x="30" y="64" font-size="12.5" fill="#8b919c">Eight sites in a 2 × 4 grid over the finger flexors, on the underside of the forearm (usually hairless). Mirror it for the left arm.</text>
+
+  <!-- ===================== FOREARM, PALM UP ===================== -->
+  <!-- Drawn as you see your own right forearm: palm up, hand pointing away, elbow
+       nearest you. The shapes are drawn hand-down and rotated 180° about (260, 417);
+       text is placed at the rotated positions so it stays upright. -->
+  <text x="260" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">UNDERSIDE · PALM UP · AS YOU SEE YOUR OWN ARM</text>
+  <g transform="rotate(180 260 417)">
+    <!-- upper arm stub, elbow crease, forearm, hand -->
+    <path d="M 150 110 L 370 110 L 362 142 C 362 190 352 300 334 420 C 322 500 314 560 312 600 L 208 600 C 206 560 198 500 186 420 C 168 300 158 190 158 142 Z"
+          fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/>
+    <path d="M 162 142 Q 260 160 358 142" stroke="#ffffff30" fill="none" stroke-width="1.5"/>
+    <path d="M 208 600 Q 260 612 312 600" stroke="#ffffff30" fill="none" stroke-width="1.5"/>
+    <path d="M 208 600 C 196 630 196 660 214 690 L 306 690 C 322 660 324 630 312 600 Z" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/>
+    <path d="M 208 612 C 182 626 168 650 170 676" stroke="#4a505c" stroke-width="12" stroke-linecap="round" fill="none"/>
+    <g stroke="#4a505c" stroke-width="10" stroke-linecap="round">
+      <path d="M 226 690 L 224 718 M 250 692 L 250 724 M 274 692 L 276 722 M 296 688 L 300 714"/>
+    </g>
+
+    <!-- muscles under the grid (approximate): FCR, FDS, FCU, FPL -->
+    <ellipse cx="206" cy="236" rx="22" ry="80" fill="#4da3ff" opacity=".16" transform="rotate(-6 206 236)"/>
+    <ellipse cx="262" cy="320" rx="52" ry="170" fill="#ff9f43" opacity=".14"/>
+    <ellipse cx="318" cy="290" rx="22" ry="130" fill="#3ddc97" opacity=".16" transform="rotate(4 318 290)"/>
+    <ellipse cx="214" cy="440" rx="18" ry="72" fill="#b48cff" opacity=".22"/>
+
+    <!-- foam pads (dashed) and gel centres -->
+    <use href="#pad" xlink:href="#pad" x="200" y="256"/><use href="#pad" xlink:href="#pad" x="240" y="256"/>
+    <use href="#pad" xlink:href="#pad" x="280" y="256"/><use href="#pad" xlink:href="#pad" x="320" y="256"/>
+    <use href="#pad" xlink:href="#pad" x="204" y="371"/><use href="#pad" xlink:href="#pad" x="242" y="371"/>
+    <use href="#pad" xlink:href="#pad" x="280" y="371"/><use href="#pad" xlink:href="#pad" x="318" y="371"/>
+    <use href="#el" xlink:href="#el" x="200" y="256" stroke="#33d9ff"/>
+    <use href="#el" xlink:href="#el" x="240" y="256" stroke="#33d9ff"/>
+    <use href="#el" xlink:href="#el" x="280" y="256" stroke="#33d9ff"/>
+    <use href="#el" xlink:href="#el" x="320" y="256" stroke="#33d9ff"/>
+    <use href="#el" xlink:href="#el" x="204" y="371" stroke="#f2851f"/>
+    <use href="#el" xlink:href="#el" x="242" y="371" stroke="#f2851f"/>
+    <use href="#el" xlink:href="#el" x="280" y="371" stroke="#f2851f"/>
+    <use href="#el" xlink:href="#el" x="318" y="371" stroke="#f2851f"/>
+  </g>
+
+  <!-- labels at the rotated positions -->
+  <text x="372" y="694" font-size="11" fill="#8b919c">elbow crease</text>
+  <text x="322" y="238" font-size="11" fill="#8b919c">wrist crease</text>
+  <g font-size="10" fill="#c9cdd4" opacity=".85" text-anchor="middle">
+    <text x="324" y="660">FCR</text>
+    <text x="260" y="666">FDS</text>
+    <text x="194" y="660">FCU</text>
+    <text x="316" y="334">FPL</text>
+  </g>
+  <text x="140" y="164" font-size="11" fill="#8b919c" text-anchor="end">◀ pinky side</text>
+  <text x="372" y="164" font-size="11" fill="#8b919c">thumb side ▶</text>
+
+  <!-- distance from the elbow crease -->
+  <path d="M 120 234 L 120 692" stroke="#8b919c" stroke-width="1" fill="none" stroke-dasharray="4 4"/>
+  <path d="M 116 578 L 124 578 M 116 463 L 124 463" stroke="#8b919c"/>
+  <g font-size="10.5" fill="#8b919c" text-anchor="end">
+    <text x="114" y="696">elbow</text>
+    <text x="114" y="582">¼</text>
+    <text x="114" y="467">½</text>
+    <text x="114" y="238">wrist</text>
+  </g>
+
+  <!-- CH numbers: CH1 and CH5 on the thumb side -->
+  <g font-size="11.5" font-weight="700" text-anchor="middle">
+    <text x="320" y="608" fill="#33d9ff">1</text><text x="280" y="608" fill="#33d9ff">2</text>
+    <text x="240" y="608" fill="#33d9ff">3</text><text x="200" y="608" fill="#33d9ff">4</text>
+    <text x="316" y="443" fill="#f2851f">5</text><text x="278" y="443" fill="#f2851f">6</text>
+    <text x="240" y="443" fill="#f2851f">7</text><text x="202" y="443" fill="#f2851f">8</text>
+  </g>
+  <g font-size="12.5" fill="#e3e6eb">
+    <path d="M 334 578 L 400 578" stroke="#33d9ff" stroke-width="1"/>
+    <text x="406" y="574"><tspan font-weight="700" fill="#33d9ff">Upper row · CH1–4</tspan></text>
+    <text x="406" y="590" font-size="11" fill="#8b919c">¼ of the way from elbow to wrist</text>
+    <text x="406" y="604" font-size="11" fill="#8b919c">CH1 on the thumb side → CH4 pinky side</text>
+    <path d="M 332 463 L 400 463" stroke="#f2851f" stroke-width="1"/>
+    <text x="406" y="459"><tspan font-weight="700" fill="#f2851f">Middle row · CH5–8</tspan></text>
+    <text x="406" y="475" font-size="11" fill="#8b919c">halfway from elbow to wrist</text>
+    <text x="406" y="489" font-size="11" fill="#8b919c">CH5 on the thumb side → CH8 pinky side</text>
+    <text x="406" y="518" font-size="11" fill="#8b919c">Gel centres about 2 cm apart.</text>
+    <text x="406" y="533" font-size="11" fill="#8b919c">Foam may overlap; gel must not touch.</text>
+    <text x="406" y="548" font-size="11" fill="#c9cdd4">Order within a row doesn't matter: calibration learns it.</text>
+  </g>
+
+  <!-- REF / BIAS on bone -->
+  <g font-size="12.5" fill="#e3e6eb">
+    <text x="406" y="300"><tspan font-weight="700">REF</tspan> · elbow point (back of the elbow)</text>
+    <text x="406" y="316" font-size="11" fill="#8b919c">single row only · bottom SRB pin</text>
+    <text x="406" y="344"><tspan font-weight="700">BIAS</tspan> · wrist bone, pinky side</text>
+    <text x="406" y="360" font-size="11" fill="#8b919c">always · bottom BIAS pin</text>
+  </g>
+
+  <!-- ===================== WIRING ===================== -->
+  <text x="760" y="98" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">WIRING · TWO OPTIONS</text>
+
+  <!-- single row -->
+  <rect x="756" y="110" width="540" height="150" rx="10" fill="#241f36" stroke="#3c3556"/>
+  <text x="772" y="134" font-size="13.5" font-weight="600" fill="#e3e6eb">A · Single row (10 pads) · Electrodes = “Single row · shared REF”</text>
+  <text x="772" y="153" font-size="11" fill="#8b919c">One pad per site → BOTTOM pin of its channel. REF on bone → bottom SRB. Top row empty.</text>
+  <g font-size="10.5" fill="#c9cdd4" text-anchor="middle">
+    <text x="784" y="178">BIAS</text><text x="814" y="178">SRB</text>
+    <text x="846" y="178">1</text><text x="880" y="178">2</text><text x="914" y="178">3</text><text x="948" y="178">4</text>
+    <text x="982" y="178">5</text><text x="1016" y="178">6</text><text x="1050" y="178">7</text><text x="1084" y="178">8</text>
+  </g>
+  <g stroke="#00000066">
+    <g fill="#3a3f4a">
+      <rect x="777" y="184" width="14" height="14" rx="2"/><rect x="807" y="184" width="14" height="14" rx="2"/>
+      <rect x="839" y="184" width="14" height="14" rx="2"/><rect x="873" y="184" width="14" height="14" rx="2"/>
+      <rect x="907" y="184" width="14" height="14" rx="2"/><rect x="941" y="184" width="14" height="14" rx="2"/>
+      <rect x="975" y="184" width="14" height="14" rx="2"/><rect x="1009" y="184" width="14" height="14" rx="2"/>
+      <rect x="1043" y="184" width="14" height="14" rx="2"/><rect x="1077" y="184" width="14" height="14" rx="2"/>
+    </g>
+    <rect x="777" y="210" width="14" height="14" rx="2" fill="#d9dce1"/>
+    <rect x="807" y="210" width="14" height="14" rx="2" fill="#ffffff"/>
+    <g fill="#33d9ff">
+      <rect x="839" y="210" width="14" height="14" rx="2"/><rect x="873" y="210" width="14" height="14" rx="2"/>
+      <rect x="907" y="210" width="14" height="14" rx="2"/><rect x="941" y="210" width="14" height="14" rx="2"/>
+    </g>
+    <g fill="#f2851f">
+      <rect x="975" y="210" width="14" height="14" rx="2"/><rect x="1009" y="210" width="14" height="14" rx="2"/>
+      <rect x="1043" y="210" width="14" height="14" rx="2"/><rect x="1077" y="210" width="14" height="14" rx="2"/>
+    </g>
+  </g>
+  <g font-size="11" fill="#e3e6eb">
+    <text x="1104" y="195" fill="#8b919c">top · empty</text>
+    <text x="1104" y="221"><tspan font-weight="700">bottom</tspan> · all</text>
+  </g>
+  <text x="772" y="248" font-size="11" fill="#8b919c">Fewer pads. The app subtracts the channel average to cancel the hum and heartbeat on REF.</text>
+
+  <!-- pairs -->
+  <rect x="756" y="276" width="540" height="150" rx="10" fill="#1f2a36" stroke="#2f4256"/>
+  <text x="772" y="300" font-size="13.5" font-weight="600" fill="#e3e6eb">B · Pairs (17 pads) · Electrodes = “Pairs · top + bottom”</text>
+  <text x="772" y="319" font-size="11" fill="#8b919c">Two pads per site, ~2 cm apart along the forearm: elbow-side → TOP pin, wrist-side → BOTTOM pin.</text>
+  <g font-size="10.5" fill="#c9cdd4" text-anchor="middle">
+    <text x="784" y="344">BIAS</text><text x="814" y="344">SRB</text>
+    <text x="846" y="344">1</text><text x="880" y="344">2</text><text x="914" y="344">3</text><text x="948" y="344">4</text>
+    <text x="982" y="344">5</text><text x="1016" y="344">6</text><text x="1050" y="344">7</text><text x="1084" y="344">8</text>
+  </g>
+  <g stroke="#00000066">
+    <rect x="777" y="350" width="14" height="14" rx="2" fill="#3a3f4a"/><rect x="807" y="350" width="14" height="14" rx="2" fill="#3a3f4a"/>
+    <g fill="#33d9ff">
+      <rect x="839" y="350" width="14" height="14" rx="2"/><rect x="873" y="350" width="14" height="14" rx="2"/>
+      <rect x="907" y="350" width="14" height="14" rx="2"/><rect x="941" y="350" width="14" height="14" rx="2"/>
+      <rect x="839" y="376" width="14" height="14" rx="2"/><rect x="873" y="376" width="14" height="14" rx="2"/>
+      <rect x="907" y="376" width="14" height="14" rx="2"/><rect x="941" y="376" width="14" height="14" rx="2"/>
+    </g>
+    <g fill="#f2851f">
+      <rect x="975" y="350" width="14" height="14" rx="2"/><rect x="1009" y="350" width="14" height="14" rx="2"/>
+      <rect x="1043" y="350" width="14" height="14" rx="2"/><rect x="1077" y="350" width="14" height="14" rx="2"/>
+      <rect x="975" y="376" width="14" height="14" rx="2"/><rect x="1009" y="376" width="14" height="14" rx="2"/>
+      <rect x="1043" y="376" width="14" height="14" rx="2"/><rect x="1077" y="376" width="14" height="14" rx="2"/>
+    </g>
+    <rect x="777" y="376" width="14" height="14" rx="2" fill="#d9dce1"/><rect x="807" y="376" width="14" height="14" rx="2" fill="#3a3f4a"/>
+  </g>
+  <g font-size="11" fill="#e3e6eb">
+    <text x="1104" y="361"><tspan font-weight="700">top</tspan> · elbow side</text>
+    <text x="1104" y="387"><tspan font-weight="700">bottom</tspan> · wrist side</text>
+  </g>
+  <text x="772" y="414" font-size="11" fill="#8b919c">No REF. Cancels the shared hum and heartbeat at the amplifier; each site sees less of its neighbours.</text>
+
+  <!-- fingers → joints -->
+  <text x="760" y="462" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">FINGER → JOINT (DEFAULT, CHANGE IN THE PANEL)</text>
+  <g font-size="12.5" fill="#e3e6eb">
+    <text x="760" y="486">Thumb → Base yaw</text><text x="960" y="486">Index → Base pitch</text>
+    <text x="760" y="508">Middle → Elbow</text><text x="960" y="508">Ring + little → Wrist</text>
+  </g>
+  <text x="760" y="532" font-size="11" fill="#8b919c">Faint tension = − direction · a little firmer = + · a real finger movement is ignored.</text>
+
+  <!-- checklist -->
+  <text x="760" y="570" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CHECKLIST</text>
+  <g font-size="12.5" fill="#e3e6eb">
+    <text x="760" y="594">1. Scrub the underside of the forearm with alcohol and let it dry.</text>
+    <text x="760" y="615">2. Find the sites with the forearm palm up; mark them with a pen.</text>
+    <text x="760" y="636">3. Large pads: trim or overlap the foam, keeping gel centres ~2 cm apart.</text>
+    <text x="760" y="657">4. Tape over the grid (or use a sleeve) so overlapping pads can't lift.</text>
+    <text x="760" y="678">5. Pick the matching Electrodes option, Connect, then Calibrate + train.</text>
+  </g>
+</svg>

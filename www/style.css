@@ -176,6 +176,67 @@ button.small { padding: 1px 7px; font-size: 11px; }
 #coach .card.hold { --phase: #4fd18b; }
 #coach .card.done { --phase: var(--accent); }
 
+/* control scheme: muscle pairs vs finger grid */
+body.fingers .muscle-only, body:not(.fingers) .finger-only { display: none; }
+.check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin-top: 10px; cursor: pointer; }
+.check small { flex-basis: 100%; padding-left: 20px; color: var(--muted); font-size: 11px; }
+
+/* finger power bar: zones (rest, faint −, firmer +, over the ceiling), target box, live marker */
+.ftrack { position: relative; height: 12px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.ftrack.big { height: 26px; border-radius: 6px; }
+.ftrack .zone { position: absolute; top: 0; bottom: 0; }
+.ftrack .zone.rest { background: #2a2e36; }
+.ftrack .zone.minus { background: #1d3f63; }
+.ftrack .zone.plus { background: #1e4d36; }
+.ftrack .zone.over { background: #5a2323; }
+.ftrack .zone.ok { background: #1e4d36; }
+.ftrack .zone.weak { background: #2a2e36; }
+.ftrack .target { position: absolute; top: 1px; bottom: 1px; border: 2px solid #fff; border-radius: 4px; box-shadow: 0 0 10px #fff6; }
+.ftrack .marker { position: absolute; top: -2px; bottom: -2px; width: 4px; margin-left: -2px; background: var(--warn); border-radius: 2px; box-shadow: 0 0 6px #000; transition: left 60ms linear; }
+.ftrack .marker.on { background: var(--accent); }
+#fbar { margin-top: 16px; text-align: left; font-size: 12px; color: var(--muted); }
+#fbar-label { display: block; margin-bottom: 4px; }
+#fbar-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
+#fbar-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+body.fingers .chan button { visibility: hidden; }
+.finger { display: grid; grid-template-columns: 92px 1fr 50px 40px; gap: 4px 8px; align-items: center; margin: 8px 0; }
+.finger .name { font-weight: 500; }
+.finger .name small { display: block; color: var(--muted); font-weight: 400; font-size: 10px; }
+.finger select { font-size: 11px; padding: 1px 4px; }
+.finger .state { text-align: right; font-size: 11px; color: var(--muted); }
+.finger .state.minus { color: #6fb3ff; }
+.finger .state.plus { color: #4fd18b; }
+.finger .state.over { color: var(--bad); }
+.finger .ftrack { grid-column: 1 / 5; }
+.finger.uncal { opacity: .55; }
+
+#coach .card.faint { --phase: #6fb3ff; }
+#coach .card.firm { --phase: #4fd18b; }
+#coach .card.real { --phase: var(--orange); }
+#coach-results .res.fres { grid-template-columns: 1fr 58px 58px 70px 70px 64px; }
+
+/* phase 2 trainer: small meter over the 3D view. Centre line = the target;
+   the fill grows red to the right when over it, green to the left when under. */
+#trainer {
+  position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); z-index: 4;
+  width: min(460px, 88%); padding: 10px 14px 10px;
+  background: #15171ce6; border: 1px solid var(--line); border-radius: 12px; font-size: 12px;
+}
+#trainer[hidden] { display: none; }
+#trainer .t-top, #trainer .t-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#trainer-what { font-size: 15px; font-weight: 650; }
+#trainer-trial { color: var(--muted); }
+#trainer .t-meter { position: relative; height: 16px; margin-top: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+#trainer .t-fill { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; }
+#trainer .t-fill.over { background: var(--bad); }
+#trainer .t-fill.under { background: #4fd18b; }
+#trainer .t-center { position: absolute; top: -2px; bottom: -2px; left: 50%; width: 2px; margin-left: -1px; background: #fff; }
+#trainer .t-hold { height: 3px; margin-top: 4px; background: transparent; border-radius: 2px; overflow: hidden; }
+#trainer .t-hold div { height: 100%; width: 0; background: var(--accent); }
+#trainer-hint { color: var(--muted); }
+#trainer.idle .t-fill { opacity: .35; }
+
 /* electrode guide overlay */
 #guide {
   position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
