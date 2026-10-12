@@ -9,7 +9,7 @@ use glam::Vec3;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use arm::{Arm, JOINTS, NUM_JOINTS};
+use arm::{deg, Arm, JOINTS, NUM_JOINTS};
 use emg::{
     cyton::CytonParser,
     decoder::Label,
@@ -17,12 +17,22 @@ use emg::{
     pipeline::{CalStep, Check, EmgPipeline, Phase},
 };
 use render::{camera::OrbitCamera, Renderer};
+use serde::{Deserialize, Serialize};
 use world::World;
 
 const TRAIL_MAX: usize = 1500;
 const TRAIL_MIN_STEP: f32 = 0.003;
-/// A joint left without a command this long starts drifting back home.
+/// Once no joint has had a command for this long, the arm starts drifting back home.
 const DRIFT_DELAY_S: f32 = 1.5;
+
+/// The gripper isn't driven by keys or EMG: a button opens or closes it, and
+/// the joint moves to that angle by itself.
+const GRIPPER: usize = 3;
+const GRIPPER_OPEN: f32 = deg(60.0);
+const GRIPPER_CLOSED: f32 = 0.0;
+/// Velocity command per radian of gripper error, and the error treated as arrived.
+const GRIPPER_GAIN: f32 = 6.0;
+const GRIPPER_TOLERANCE: f32 = deg(0.3);
 
 fn band_code(b: Band) -> u8 {
     match b {
@@ -52,6 +62,18 @@ fn label_code(label: Option<Label>) -> f32 {
     }
 }
 
+/// Bumped whenever a saved calibration's layout changes, so an old file is
+/// refused instead of misread.
+const CALIBRATION_VERSION: u32 = 1;
+
+/// Both schemes' calibrations, as saved by `export_calibration`.
+#[derive(Serialize, Deserialize)]
+struct SavedCalibration {
+    version: u32,
+    muscle: emg::pipeline::Calibration,
+    finger: finger::Calibration,
+}
+
 #[wasm_bindgen]
 pub struct App {
     renderer: Renderer,
@@ -66,8 +88,12 @@ pub struct App {
     fingers: FingerControl,
     finger_mode: bool,
     drift: bool,
-    /// Seconds each joint has been without a command.
-    idle: [f32; NUM_JOINTS],
+    /// Seconds since any joint last had a command.
+    idle: f32,
+    /// Angle the gripper is moving to (radians).
+    gripper_target: f32,
+    /// The joints were set from outside (the real arm) for this frame: no inputs, no drift.
+    tracked: bool,
     trail: Vec<Vec3>,
 }
 
@@ -84,11 +110,23 @@ impl App {
             manual: [0.0; NUM_JOINTS],
             use_emg: false,
             parser: CytonParser::new(),
-            emg: EmgPipeline::new(),
-            fingers: FingerControl::new(),
+            emg: {
+                // nothing to calibrate for the gripper: it has its own button
+                let mut e = EmgPipeline::new();
+                e.set_mapping(GRIPPER, None, None);
+                e
+            },
+            fingers: {
+                // ring + little would drive the gripper, which has its own button
+                let mut f = FingerControl::new();
+                f.set_joint(3, None);
+                f
+            },
             finger_mode: false,
             drift: true,
-            idle: [0.0; NUM_JOINTS],
+            idle: 0.0,
+            tracked: false,
+            gripper_target: GRIPPER_CLOSED,
             trail: Vec::new(),
         })
     }
@@ -110,30 +148,12 @@ impl App {
     /// Advance the simulation by `dt` seconds and draw a frame.
     pub fn frame(&mut self, dt: f32) {
         let dt = dt.clamp(0.0, 0.1);
-        // Hold the arm still while a muscle calibration is asking for pulses (the
-        // finger control decides that itself: still in phase 1, one joint in phase 2).
-        let calibrating = self.emg.calibration_status().is_some();
-        let mut inputs = match (self.use_emg, self.finger_mode, calibrating) {
-            (false, ..) => self.manual,
-            (true, true, _) => self.fingers.joint_inputs(),
-            (true, false, false) => self.emg.joint_inputs(),
-            (true, false, true) => [0.0; NUM_JOINTS],
-        };
-        for (j, v) in inputs.iter_mut().enumerate() {
-            if *v != 0.0 || !(self.use_emg && self.drift) {
-                self.idle[j] = 0.0;
-                continue;
-            }
-            self.idle[j] += dt;
-            if self.idle[j] >= DRIFT_DELAY_S {
-                *v = self.arm.drift_input(j);
-            }
+        if std::mem::take(&mut self.tracked) {
+            self.idle = 0.0;
+        } else {
+            self.drive(dt);
         }
-        for (j, v) in inputs.into_iter().enumerate() {
-            self.arm.set_input(j, v);
-        }
-        self.arm.step(dt);
-        self.world.step(dt, self.arm.frames().tool);
+        self.world.step(self.arm.frames().tool, self.arm.angle(3));
 
         let ee = self.arm.end_effector();
         if self.trail.last().map_or(true, |p| p.distance(ee) > TRAIL_MIN_STEP) {
@@ -146,7 +166,75 @@ impl App {
         self.renderer.render(&self.camera, &self.arm, &self.world, &self.trail);
     }
 
+    /// Integrate this frame's joint commands (manual or EMG, plus idle drift).
+    fn drive(&mut self, dt: f32) {
+        // Hold the arm still while a muscle calibration is asking for pulses (the
+        // finger control decides that itself: still in phase 1, one joint in phase 2).
+        let calibrating = self.emg.calibration_status().is_some();
+        let mut inputs = match (self.use_emg, self.finger_mode, calibrating) {
+            (false, ..) => self.manual,
+            (true, true, _) => self.fingers.joint_inputs(),
+            (true, false, false) => self.emg.joint_inputs(),
+            (true, false, true) => [0.0; NUM_JOINTS],
+        };
+        // Drift only once the whole arm is idle, so holding one joint still
+        // while driving another doesn't pull the held one back home. The gripper
+        // only ever goes where its button sends it.
+        let arm_joints = 0..GRIPPER;
+        if inputs[arm_joints.clone()].iter().any(|&v| v != 0.0) || !(self.use_emg && self.drift) {
+            self.idle = 0.0;
+        } else {
+            self.idle += dt;
+            if self.idle >= DRIFT_DELAY_S {
+                for j in arm_joints {
+                    inputs[j] = self.arm.drift_input(j);
+                }
+            }
+        }
+        let error = self.gripper_target - self.arm.angle(GRIPPER);
+        inputs[GRIPPER] = if error.abs() < GRIPPER_TOLERANCE {
+            0.0
+        } else {
+            (error * GRIPPER_GAIN / JOINTS[GRIPPER].max_speed).clamp(-1.0, 1.0)
+        };
+        for (j, v) in inputs.into_iter().enumerate() {
+            self.arm.set_input(j, v);
+        }
+        self.arm.step(dt);
+    }
+
+    /// Binary STL for link `i` of `link_mesh_names()`; until all are loaded
+    /// the arm is drawn from primitives.
+    pub fn load_link_mesh(&mut self, i: usize, bytes: &[u8]) -> Result<(), JsValue> {
+        self.renderer.load_link(i, bytes)
+    }
+
+    pub fn link_mesh_names(&self) -> Vec<String> {
+        render::scene::LINK_MESHES.iter().map(|s| s.to_string()).collect()
+    }
+
     // ---- arm --------------------------------------------------------------
+
+    /// Puts the joints at these angles (degrees) for the next frame, which then
+    /// ignores the manual/EMG commands: the simulation mirrors the real arm.
+    pub fn track_joints(&mut self, degrees: &[f32]) {
+        if let Ok(q) = <[f32; NUM_JOINTS]>::try_from(degrees) {
+            self.arm.set_angles(q.map(f32::to_radians));
+            self.tracked = true;
+            // the button carries on from wherever the real gripper is
+            self.gripper_target = self.arm.angle(GRIPPER);
+        }
+    }
+
+    /// Open (true) or close the gripper.
+    pub fn set_gripper(&mut self, open: bool) {
+        self.gripper_target = if open { GRIPPER_OPEN } else { GRIPPER_CLOSED };
+    }
+
+    /// The gripper is open or opening.
+    pub fn gripper_open(&self) -> bool {
+        self.gripper_target > (GRIPPER_OPEN + GRIPPER_CLOSED) / 2.0
+    }
 
     /// Manual velocity command (-1..1), used while EMG control is off.
     pub fn set_input(&mut self, joint: usize, value: f32) {
@@ -186,6 +274,7 @@ impl App {
     /// Home pose, box back on the table, trail cleared.
     pub fn reset(&mut self) {
         self.arm.reset();
+        self.gripper_target = GRIPPER_CLOSED;
         self.world.reset();
         self.trail.clear();
     }
@@ -217,6 +306,30 @@ impl App {
         self.parser.reset();
         self.emg.reset_filters();
         self.fingers.reset_state();
+    }
+
+    /// Both schemes' calibrations (not the panel settings), as bytes to store.
+    pub fn export_calibration(&self) -> Vec<u8> {
+        let saved = SavedCalibration {
+            version: CALIBRATION_VERSION,
+            muscle: self.emg.calibration(),
+            finger: self.fingers.calibration(),
+        };
+        bincode::serialize(&saved).expect("calibration serializes")
+    }
+
+    /// Restores what `export_calibration` saved, replacing the current calibration.
+    pub fn import_calibration(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let version = bincode::deserialize::<u32>(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if version != CALIBRATION_VERSION {
+            return Err(JsValue::from_str(&format!(
+                "saved calibration is format {version}, this build reads format {CALIBRATION_VERSION}"
+            )));
+        }
+        let saved: SavedCalibration = bincode::deserialize(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.emg.restore(saved.muscle);
+        self.fingers.restore(saved.finger);
+        Ok(())
     }
 
     /// Ease idle joints back to the home pose under EMG control.
@@ -559,12 +672,14 @@ impl App {
             .collect()
     }
 
-    pub fn set_finger_joint(&mut self, finger: usize, joint: usize) {
-        self.fingers.set_joint(finger, joint);
+    /// Joint a finger drives; -1 turns the finger off.
+    pub fn set_finger_joint(&mut self, finger: usize, joint: i32) {
+        self.fingers.set_joint(finger, usize::try_from(joint).ok());
     }
 
-    pub fn finger_joints(&self) -> Vec<u8> {
-        self.fingers.joints().map(|j| j as u8).to_vec()
+    /// Joint each finger drives, -1 = off.
+    pub fn finger_joints(&self) -> Vec<i32> {
+        self.fingers.joints().map(|j| j.map_or(-1, |j| j as i32)).to_vec()
     }
 
     /// Simple fixed bands (rest < ¼ < − < ½ < +, no ceiling) or the adaptive ones.

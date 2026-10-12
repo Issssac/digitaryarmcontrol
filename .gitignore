@@ -1,2 +1,5 @@
 /target
 /www/pkg
+/calibration.json
+/calibration.tmp
+/www/models

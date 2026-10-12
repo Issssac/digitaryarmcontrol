@@ -1,6 +1,8 @@
 import init, { App } from './pkg/arm_sim.js';
 import { CytonSerial } from './serial.js';
 import { CytonSimulator } from './simulator.js';
+import { CytonWifi } from './wifi.js';
+import { RoArm, SERVOS_DOWN } from './roarm.js';
 
 const NUM_CH = 8;
 const KEYS = [['q', 'a'], ['w', 's'], ['e', 'd'], ['r', 'f']];
@@ -73,6 +75,10 @@ try {
 }
 
 const names = app.joint_names();
+/** The gripper has an open/close button; keys and EMG drive the other joints. */
+const GRIPPER = 3;
+const DRIVEN = names.slice(0, GRIPPER);
+const jointName = (j) => (j >= 0 ? names[j] : 'off');
 
 // ---- view: sizing, orbit, zoom ---------------------------------------------
 
@@ -108,10 +114,10 @@ function setSource(src) {
     b.classList.toggle('active', b.dataset.src === src);
   }
   $('source-hint').textContent = src !== 'emg'
-    ? 'Keys Q/A · W/S · E/D · R/F, or drag the sliders (they spring back to 0).'
+    ? 'Keys Q/A · W/S · E/D, or drag the sliders (they spring back to 0). Gripper: R open, F close, Space toggles.'
     : scheme === 'finger'
-      ? 'Arm follows finger tension. With Simulate on, Q/W/E/R = firmer (+) and A/S/D/F = faint (−) on the finger driving that joint (Shift = a real movement); 1/2/3 = arm limp / forearm raised / arm up.'
-      : 'Arm follows muscle activation. With Simulate on, Q/A · W/S · E/D · R/F fake contractions (Shift = full).';
+      ? 'Arm follows finger tension. With Simulate on, Q/W/E = firmer (+) and A/S/D = faint (−) on the finger driving that joint (Shift = a real movement); 1/2/3 = arm limp / forearm raised / arm up. Gripper: R / F / Space.'
+      : 'Arm follows muscle activation. With Simulate on, Q/A · W/S · E/D fake contractions (Shift = full). Gripper: R / F / Space.';
 }
 
 $('source').addEventListener('click', (e) => {
@@ -130,6 +136,14 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === 'SELECT') return;
   const k = e.key.toLowerCase();
   if (['1', '2', '3'].includes(k)) simPosture = Number(k) - 1; // simulated arm posture
+  if (e.target.tagName !== 'INPUT' || e.target.type === 'range') {
+    const [open, close] = KEYS[GRIPPER];
+    if (k === open || k === close || k === ' ') {
+      if (!e.repeat) app.set_gripper(k === ' ' ? !app.gripper_open() : k === open);
+      e.preventDefault();
+      return;
+    }
+  }
   if (ALL_KEYS.includes(k)) {
     held.add(k);
     e.preventDefault();
@@ -148,33 +162,42 @@ const keyAxis = (j) => (held.has(KEYS[j][0]) ? 1 : 0) - (held.has(KEYS[j][1]) ? 
 const joints = names.map((name, j) => {
   const row = document.createElement('div');
   row.className = 'joint';
-  row.innerHTML = `
-    <div class="name">${name}<small>${KEYS[j][0].toUpperCase()} / ${KEYS[j][1].toUpperCase()}</small></div>
-    <input type="range" min="-1" max="1" step="0.01" value="0" aria-label="${name} velocity">
-    <div class="angle mono"></div>
-    <div class="meter"><div></div></div>`;
+  row.innerHTML = j === GRIPPER
+    ? `<div class="name">${name}<small>R / F · Space</small></div>
+      <button class="gripper" title="Open or close the gripper (R open, F close, Space toggles)">Open</button>
+      <div class="angle mono"></div>`
+    : `<div class="name">${name}<small>${KEYS[j][0].toUpperCase()} / ${KEYS[j][1].toUpperCase()}</small></div>
+      <input type="range" min="-1" max="1" step="0.01" value="0" aria-label="${name} velocity">
+      <div class="angle mono"></div>
+      <div class="meter"><div></div></div>`;
   $('joints').append(row);
   return {
     slider: row.querySelector('input'),
+    button: row.querySelector('button'),
     angle: row.querySelector('.angle'),
     meter: row.querySelector('.meter div'),
   };
 });
+joints[GRIPPER].button.onclick = () => app.set_gripper(!app.gripper_open());
 
 // sliders are velocity commands and spring back on release
 addEventListener('pointerup', () => {
-  for (const j of joints) j.slider.value = '0';
+  for (const j of joints) if (j.slider) j.slider.value = '0';
 });
 
 $('reset').onclick = () => app.reset();
 $('clear-trail').onclick = () => app.clear_trail();
-$('drift').onchange = (e) => app.set_drift(e.target.checked);
+let roarm = null;
+
+// Never while the real arm follows: it would creep home on its own.
+const applyDrift = () => app.set_drift($('drift').checked && !roarm?.following);
+$('drift').onchange = applyDrift;
 
 // ---- mapping ---------------------------------------------------------------
 
 function readMapping() {
   const m = app.mapping();
-  return names.map((_, j) => [m[2 * j], m[2 * j + 1]]);
+  return DRIVEN.map((_, j) => [m[2 * j], m[2 * j + 1]]);
 }
 
 function channelRoles() {
@@ -265,7 +288,7 @@ function drawFingerIntent(el) {
   const pose = postureText();
   el.querySelector('.where').textContent = (over
     ? 'a finger crossed its ceiling, so every joint holds'
-    : active.length ? active.map((f) => `${names[joints[f]]} ${plus(f) ? '+' : '−'}`).join(' · ') : 'no finger past its rest band')
+    : active.length ? active.map((f) => `${jointName(joints[f])} ${plus(f) ? '+' : '−'}`).join(' · ') : 'no finger past its rest band')
     + (pose ? ` · arm: ${pose}` : '');
   el.querySelector('.conf div').style.width = pctOf(Math.max(...powers), 1);
 }
@@ -380,7 +403,7 @@ const fingerRows = FINGERS.map((fg, f) => {
   row.className = 'finger uncal';
   row.innerHTML = `
     <div class="name">${fg.name}<small></small></div>
-    <select aria-label="Joint driven by ${fg.name}">${names.map((n, j) => `<option value="${j}">${n}</option>`).join('')}</select>
+    <select aria-label="Joint driven by ${fg.name}">${DRIVEN.map((n, j) => `<option value="${j}">${n}</option>`).join('')}<option value="-1">Off</option></select>
     <div class="state mono"></div>
     <button class="small" title="Recalibrate and retrain just this finger">Redo</button>
     <div class="ftrack"></div>`;
@@ -467,6 +490,13 @@ const setBci = (msg) => { $('bci-status').textContent = msg; };
 // average cancels the hum and noise it puts on every channel.
 const applyWiring = () => app.set_car($('wiring').value === 'common');
 $('wiring').onchange = applyWiring;
+
+// USB dongle (Web Serial) or WiFi Shield (bridged by serve.py). The shield's IP is remembered.
+const useWifi = () => $('link').value === 'wifi';
+const showLink = () => { $('shield-ip-field').hidden = !useWifi(); };
+try { $('shield-ip').value = localStorage.getItem('shield-ip') || $('shield-ip').value; } catch { /* storage blocked */ }
+$('link').onchange = showLink;
+showLink();
 const streaming = () => Boolean(sim || (serial && serial.binary));
 
 function requireStream() {
@@ -482,6 +512,8 @@ function updateButtons() {
   $('connect').disabled = Boolean(sim);
   $('simulate').disabled = Boolean(serial);
   $('wiring').disabled = Boolean(serial); // channel config is sent on connect
+  $('link').disabled = Boolean(serial || sim);
+  $('shield-ip').disabled = Boolean(serial);
 }
 
 $('connect').onclick = async () => {
@@ -489,11 +521,16 @@ $('connect').onclick = async () => {
     await serial.disconnect();
     return;
   }
-  if (!CytonSerial.supported) {
+  if (!useWifi() && !CytonSerial.supported) {
     setBci('Web Serial is unavailable. Use Chrome or Edge on http://localhost.');
     return;
   }
-  serial = new CytonSerial({
+  if (useWifi()) {
+    try { localStorage.setItem('shield-ip', $('shield-ip').value.trim()); } catch { /* storage blocked */ }
+  }
+  const Link = useWifi() ? CytonWifi : CytonSerial;
+  serial = new Link({
+    ip: $('shield-ip').value,
     wiring: $('wiring').value,
     onData: (bytes) => app.push_serial(bytes),
     onStatus: setBci,
@@ -572,6 +609,7 @@ function simulateFingers() {
     const powers = app.finger_powers();
     const joints = app.finger_joints();
     for (let f = 0; f < NUM_FINGERS; f++) {
+      if (joints[f] < 0) continue;
       const [up, down] = KEYS[joints[f]].map((k) => held.has(k));
       if (!up && !down) continue;
       const b = fingerBands(f);
@@ -845,6 +883,7 @@ function drawCoach(now) {
 
 function finishCalibration() {
   coach.active = false;
+  saveCalibration();
   beep(990, 220);
   const rest = app.rest_levels();
   const max = app.max_levels();
@@ -993,7 +1032,7 @@ function drawFingerCoach(now) {
   }
   const [step, f, phase, progress, secondsLeft, check, arg, stuck, kind, meter, lo, hi, segment, , round, rounds, goal, aim, posture] = s;
   const fg = FINGERS[f];
-  const joint = f >= 0 ? names[app.finger_joints()[f]] : '';
+  const joint = f >= 0 ? jointName(app.finger_joints()[f]) : '';
   const stalled = isStalled(now);
   const count = Math.ceil(secondsLeft - 1e-3);
 
@@ -1154,6 +1193,7 @@ function drawFingerCard({ step, f, phase, progress, count, check, arg, stuck, ki
 
 function finishFingerCalibration() {
   coach.active = false;
+  saveCalibration();
   $('trainer').hidden = true;
   coach.el.hidden = false;
   beep(990, 220);
@@ -1162,7 +1202,7 @@ function finishFingerCalibration() {
   const rows = FINGERS.map((fg, f) => {
     const [cal, faint, , isolation, hits, trials, , , , heldFaint, heldFirm, smoothMs, mixed] =
       rep.slice(f * REPORT_LEN, (f + 1) * REPORT_LEN);
-    const name = `<span>${fg.name} → ${names[joints[f]]}</span>`;
+    const name = `<span>${fg.name} → ${jointName(joints[f])}</span>`;
     if (!cal) return `<div class="res fres">${name}<span class="bad">skipped</span><span></span><span></span><span></span><span></span></div>`;
     const grade = (v, good, ok) => (v >= good ? 'good' : v >= ok ? 'ok' : 'bad');
     const training = trials ? `<span class="${grade(hits / trials, 0.75, 0.5)}">${hits}/${trials} hits</span>` : '<span>—</span>';
@@ -1226,13 +1266,19 @@ function updateUi(now) {
   joints.forEach((j, i) => {
     j.angle.textContent = `${fmt(angles[i])}°`;
     const v = inputs[i];
+    if (j.button) {
+      const open = app.gripper_open();
+      j.button.textContent = open ? 'Close' : 'Open';
+      j.button.classList.toggle('active', open);
+      return;
+    }
     j.meter.style.left = `${50 + Math.min(v, 0) * 50}%`;
     j.meter.style.width = `${Math.abs(v) * 50}%`;
   });
 
   const [x, y, z] = app.end_effector();
   $('ee').innerHTML = `<span>End effector (m)</span><span>${fmt(x, 3)} ${fmt(y, 3)} ${fmt(z, 3)}</span>`
-    + `<span>Claw</span><span>${app.holding() ? 'holding · set down to drop' : 'open · touch box to grab'}</span>`;
+    + `<span>Box</span><span>${app.holding() ? 'held · open the gripper to drop' : 'open, then close the gripper on it'}</span>`;
 
   const env = app.envelopes();
   const act = app.activations();
@@ -1276,18 +1322,204 @@ function frame(now) {
   last = now;
 
   if (source === 'manual') {
-    joints.forEach((j, i) => app.set_input(i, keyAxis(i) || Number(j.slider.value)));
+    joints.forEach((j, i) => { if (j.slider) app.set_input(i, keyAxis(i) || Number(j.slider.value)); });
   }
   if (sim) pumpSimulator(now);
+  trackArm();
   app.frame(dt);
+  roarm?.update(app.joint_angles(), dt);
   drawCoach(now);
   drawIntent();
 
   if (now - lastUi >= UI_INTERVAL_MS) {
     lastUi = now;
     updateUi(now);
+    updateArm();
   }
   requestAnimationFrame(frame);
+}
+
+// ---- real arm (RoArm-M2-S) ----------------------------------------------------
+
+const setArm = (msg) => { $('arm-status').textContent = msg; };
+const armRows = names.map((name) => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${name}</td><td class="mono">—</td><td class="mono">—</td>`;
+  $('arm-map').querySelector('tbody').append(tr);
+  return { sim: tr.children[1], real: tr.children[2] };
+});
+
+function updateArmButtons() {
+  applyDrift();
+  $('arm-connect').textContent = roarm ? 'Disconnect arm' : 'Connect arm';
+  $('arm-follow').disabled = !roarm?.live;
+  $('arm-follow').checked = Boolean(roarm?.following);
+}
+
+$('arm-connect').onclick = async () => {
+  if (roarm) {
+    await roarm.disconnect();
+    return;
+  }
+  if (!RoArm.supported) {
+    setArm('Web Serial is unavailable. Use Chrome or Edge on http://localhost.');
+    return;
+  }
+  roarm = new RoArm({
+    onStatus: (msg) => { setArm(msg); updateArmButtons(); },
+    onClose: () => {
+      roarm = null;
+      armRows.forEach((r) => { r.real.textContent = '—'; });
+      updateArmButtons();
+      setArm('Disconnected');
+    },
+  });
+  updateArmButtons();
+  try {
+    await roarm.connect();
+  } catch (err) {
+    const msg = err.name === 'NotFoundError' ? 'No port selected.' : err.message;
+    await roarm?.disconnect();
+    roarm = null;
+    setArm(msg);
+  }
+  updateArmButtons();
+};
+
+$('arm-follow').onchange = (e) => {
+  roarm?.follow(e.target.checked);
+  setArm(roarm?.following
+    ? "Following: the arm is sent the simulation's pose."
+    : "Not following: the simulation shows the arm's pose.");
+  updateArmButtons();
+};
+
+/** Before each frame: while not following, the simulation takes the real arm's pose. */
+function trackArm() {
+  if (roarm?.live && !roarm.following) app.track_joints(roarm.real);
+}
+
+function updateArm() {
+  if (roarm?.servosDown && !roarm.following) setArm(SERVOS_DOWN);
+  const sim = app.joint_angles();
+  armRows.forEach((r, j) => {
+    r.sim.textContent = `${fmt(sim[j])}°`;
+    r.real.textContent = roarm?.real ? `${fmt(roarm.real[j])}°` : '—';
+  });
+  if ($('arm-follow').checked !== Boolean(roarm?.following) || $('arm-follow').disabled === Boolean(roarm?.live)) updateArmButtons();
+}
+
+// ---- arm meshes ---------------------------------------------------------------
+// Waveshare's own link meshes (python fetch_models.py puts them in www/models/);
+// until all have loaded the arm is drawn from simple shapes.
+
+async function loadArmMeshes() {
+  try {
+    const files = await Promise.all(app.link_mesh_names().map(async (name) => {
+      const res = await fetch(`models/${name}.stl`);
+      if (!res.ok) throw new Error(`models/${name}.stl: ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    }));
+    files.forEach((bytes, i) => app.load_link_mesh(i, bytes));
+  } catch (err) {
+    console.info(`Arm drawn from simple shapes (${err.message ?? err}). Run python fetch_models.py for the real meshes.`);
+  }
+}
+
+// ---- saved calibration -----------------------------------------------------
+// serve.py keeps one calibration.json: both schemes' calibrations (WASM bytes,
+// base64) plus the panel settings. Saved when a calibration finishes and when a
+// setting changes; loaded on startup.
+
+const RANGES = ['threshold', 'gain', 'fspeed'];
+let autosave = false; // off until the saved file has been read, so it can't be overwritten unread
+let saveTimer = null;
+const setSaved = (msg) => { $('saved-status').textContent = msg; };
+
+const toBase64 = (bytes) => {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+const fromBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+function panelSettings() {
+  return {
+    ...Object.fromEntries(RANGES.map((id) => [id, Number($(id).value)])),
+    mains: $('mains').value,
+    simpleBands: $('fsimple').checked,
+    drift: $('drift').checked,
+    decoder: decoderMode,
+    mapping: [...app.mapping()],
+    fingerJoints: [...app.finger_joints()],
+  };
+}
+
+/** Sets each control and fires its own handler, so the app and the labels follow. */
+function applySettings(st) {
+  const set = (el, value, event) => {
+    if (value === undefined) return;
+    if (el.type === 'checkbox') el.checked = value;
+    else if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === String(value))) el.value = '-1';
+    else el.value = String(value);
+    el.dispatchEvent(new Event(event, { bubbles: true }));
+  };
+  for (const id of RANGES) set($(id), st[id], 'input');
+  set($('mains'), st.mains, 'change');
+  set($('fsimple'), st.simpleBands, 'change');
+  set($('drift'), st.drift, 'change');
+  if (st.decoder) setDecoder(st.decoder);
+  [...mappingBody.rows].forEach((tr, j) => {
+    const [pos, neg] = tr.querySelectorAll('select');
+    pos.value = String(st.mapping?.[2 * j] ?? pos.value);
+    set(neg, st.mapping?.[2 * j + 1], 'change');
+  });
+  fingerRows.forEach((r, f) => set(r.row.querySelector('select'), st.fingerJoints?.[f], 'change'));
+}
+
+async function saveCalibration() {
+  clearTimeout(saveTimer);
+  autosave = true; // a finished calibration is worth keeping even if the old file was unreadable
+  const body = JSON.stringify({ settings: panelSettings(), calibration: toBase64(app.export_calibration()) });
+  try {
+    const res = await fetch('/calibration', { method: 'PUT', body });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    setSaved(`Calibration saved ${new Date().toLocaleTimeString()} (calibration.json).`);
+  } catch (err) {
+    setSaved(`Couldn't save the calibration: ${err.message}`);
+  }
+}
+
+function saveSoon() {
+  if (!autosave || coach.active) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveCalibration, 800);
+}
+$('panel').addEventListener('change', saveSoon);
+$('panel').addEventListener('input', saveSoon);
+
+async function loadCalibration() {
+  let saved;
+  try {
+    const res = await fetch('/calibration');
+    if (res.status === 404) {
+      autosave = true;
+      setSaved('No saved calibration yet. It saves when a calibration finishes.');
+      return;
+    }
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    saved = await res.json();
+    app.import_calibration(fromBase64(saved.calibration));
+  } catch (err) {
+    setSaved(`Saved calibration not loaded (${err.message ?? err}). The file is kept until a new calibration finishes.`);
+    return;
+  }
+  applySettings(saved.settings ?? {});
+  refreshDecoderHint();
+  refreshFingerStatus();
+  if (app.is_calibrated()) setCal('Calibrated (loaded from the saved calibration). Redo any step from its button, or run Full calibration again.');
+  autosave = true;
+  setSaved('Loaded the saved calibration. Changes save automatically.');
 }
 
 setSource('manual');
@@ -1296,4 +1528,6 @@ let savedScheme = 'muscle';
 try { savedScheme = localStorage.getItem('scheme') === 'finger' ? 'finger' : 'muscle'; } catch { /* default */ }
 setScheme(savedScheme);
 updateButtons();
+loadCalibration();
+loadArmMeshes();
 requestAnimationFrame(frame);

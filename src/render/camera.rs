@@ -9,8 +9,8 @@ pub struct OrbitCamera {
 
 impl Default for OrbitCamera {
     fn default() -> Self {
-        // In front of the wall (x > 0), looking back at it from one side.
-        Self { yaw: 0.62, pitch: 0.30, distance: 2.2, target: Vec3::new(0.40, 0.60, 0.0) }
+        // In front of the arm and to its right, looking slightly down.
+        Self { yaw: 1.05, pitch: 0.38, distance: 1.05, target: Vec3::new(0.12, 0.18, 0.0) }
     }
 }
 
@@ -26,18 +26,17 @@ impl OrbitCamera {
     }
 
     pub fn proj(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh_gl(45f32.to_radians(), aspect.max(0.01), 0.02, 50.0)
+        Mat4::perspective_rh_gl(45f32.to_radians(), aspect.max(0.01), 0.01, 20.0)
     }
 
     /// Mouse drag in CSS pixels.
     pub fn orbit(&mut self, dx: f32, dy: f32) {
-        // Stay on the open side of the wall (eye x > 0).
-        self.yaw = (self.yaw - dx * 0.008).clamp(0.15, std::f32::consts::PI - 0.15);
+        self.yaw = (self.yaw - dx * 0.008).rem_euclid(std::f32::consts::TAU);
         self.pitch = (self.pitch + dy * 0.008).clamp(0.02, 1.5);
     }
 
     /// Wheel delta (positive = zoom out).
     pub fn zoom(&mut self, delta: f32) {
-        self.distance = (self.distance * (delta * 0.001).exp()).clamp(0.5, 6.0);
+        self.distance = (self.distance * (delta * 0.001).exp()).clamp(0.25, 3.0);
     }
 }

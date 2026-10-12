@@ -28,6 +28,8 @@
 //! that posture's baseline is taken out before the finger powers are measured,
 //! and each finger's noise floor blends between the floors of the postures.
 
+use serde::{Deserialize, Serialize};
+
 use super::cyton::{NUM_CHANNELS, SAMPLE_RATE};
 use super::decoder::{nnls, Features};
 use crate::arm::NUM_JOINTS;
@@ -338,7 +340,7 @@ pub struct Status {
 }
 
 /// What phases 1 and 2 found for one finger.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct FingerReport {
     pub calibrated: bool,
     /// Faintest level reached in phase 1, as a fraction of the ceiling.
@@ -363,7 +365,7 @@ pub struct FingerReport {
 }
 
 /// Per-finger calibration recordings.
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct FingerData {
     hard: Option<Features>,
     /// z samples of the medium flex (they define the ceiling).
@@ -382,6 +384,7 @@ struct FingerData {
 }
 
 /// The limp rest recording: the reference every z-score is measured from.
+#[derive(Clone, Serialize, Deserialize)]
 struct RestModel {
     mean: Features,
     scale: Features,
@@ -447,7 +450,7 @@ pub struct FingerControl {
     anchor: [[f64; 2]; NUM_FINGERS],
     report: [FingerReport; NUM_FINGERS],
     /// Joint each finger drives.
-    joint_of: [usize; NUM_FINGERS],
+    joint_of: [Option<usize>; NUM_FINGERS],
     pub speed: f32,
     /// Fixed ¼ / ½ bands with no ceiling (true), or the adaptive bands with
     /// the real-movement ceiling and phase 2 fine-tuning (false).
@@ -472,6 +475,28 @@ pub struct FingerControl {
     above_t: [f32; NUM_FINGERS],
     run: Option<Run>,
     inputs: [f32; NUM_JOINTS],
+}
+
+/// Everything calibration and training learned, to save and restore it. The
+/// joint each finger drives, the speed and the band style are panel settings
+/// and are saved by the page.
+#[derive(Serialize, Deserialize)]
+pub struct Calibration {
+    rest: Option<RestModel>,
+    postures: Vec<Features>,
+    posture_rest: Vec<Vec<Features>>,
+    stasis_by: Vec<[f64; NUM_FINGERS]>,
+    data: [FingerData; NUM_FINGERS],
+    templates: [Option<Features>; NUM_FINGERS],
+    stasis: [f64; NUM_FINGERS],
+    level: [f64; NUM_FINGERS],
+    plus_level: [f64; NUM_FINGERS],
+    wobble: [[f64; 2]; NUM_FINGERS],
+    jitter: [[f64; 2]; NUM_FINGERS],
+    habit: [[f64; 2]; NUM_FINGERS],
+    measured: [[u32; 2]; NUM_FINGERS],
+    anchor: [[f64; 2]; NUM_FINGERS],
+    report: [FingerReport; NUM_FINGERS],
 }
 
 impl Default for FingerControl {
@@ -501,7 +526,7 @@ impl FingerControl {
             measured: [[0; 2]; NUM_FINGERS],
             anchor: [[f64::NAN; 2]; NUM_FINGERS],
             report: [FingerReport::default(); NUM_FINGERS],
-            joint_of: std::array::from_fn(|f| f % NUM_JOINTS),
+            joint_of: std::array::from_fn(|f| Some(f % NUM_JOINTS)),
             speed: DEFAULT_SPEED,
             simple_bands: true,
             envelope: [0.0; NUM_CHANNELS],
@@ -518,6 +543,47 @@ impl FingerControl {
             run: None,
             inputs: [0.0; NUM_JOINTS],
         }
+    }
+
+    pub fn calibration(&self) -> Calibration {
+        Calibration {
+            rest: self.rest.clone(),
+            postures: self.postures.clone(),
+            posture_rest: self.posture_rest.clone(),
+            stasis_by: self.stasis_by.clone(),
+            data: self.data.clone(),
+            templates: self.templates,
+            stasis: self.stasis,
+            level: self.level,
+            plus_level: self.plus_level,
+            wobble: self.wobble,
+            jitter: self.jitter,
+            habit: self.habit,
+            measured: self.measured,
+            anchor: self.anchor,
+            report: self.report,
+        }
+    }
+
+    pub fn restore(&mut self, cal: Calibration) {
+        self.run = None;
+        self.posture_w = vec![0.0; cal.postures.len()];
+        self.rest = cal.rest;
+        self.postures = cal.postures;
+        self.posture_rest = cal.posture_rest;
+        self.stasis_by = cal.stasis_by;
+        self.data = cal.data;
+        self.templates = cal.templates;
+        self.stasis = cal.stasis;
+        self.level = cal.level;
+        self.plus_level = cal.plus_level;
+        self.wobble = cal.wobble;
+        self.jitter = cal.jitter;
+        self.habit = cal.habit;
+        self.measured = cal.measured;
+        self.anchor = cal.anchor;
+        self.report = cal.report;
+        self.reset_state();
     }
 
     /// Clears the live state after a reconnect (keeps everything learned).
@@ -547,13 +613,14 @@ impl FingerControl {
         }
     }
 
-    pub fn set_joint(&mut self, finger: usize, joint: usize) {
-        if finger < NUM_FINGERS && joint < NUM_JOINTS {
+    /// The joint a finger drives, or None to leave that finger out of the control.
+    pub fn set_joint(&mut self, finger: usize, joint: Option<usize>) {
+        if finger < NUM_FINGERS && joint.map_or(true, |j| j < NUM_JOINTS) {
             self.joint_of[finger] = joint;
         }
     }
 
-    pub fn joints(&self) -> [usize; NUM_FINGERS] {
+    pub fn joints(&self) -> [Option<usize>; NUM_FINGERS] {
         self.joint_of
     }
 
@@ -937,8 +1004,9 @@ impl FingerControl {
                 Band::Plus => self.speed,
                 _ => 0.0,
             };
-            let j = self.joint_of[f];
-            self.inputs[j] = (self.inputs[j] + v).clamp(-1.0, 1.0);
+            if let Some(j) = self.joint_of[f] {
+                self.inputs[j] = (self.inputs[j] + v).clamp(-1.0, 1.0);
+            }
         }
     }
 
@@ -958,9 +1026,10 @@ impl FingerControl {
         self.start(first, vec![finger], Vec::new(), train_after);
     }
 
-    /// Phase 2 only: every calibrated finger.
+    /// Phase 2 only: every calibrated finger that drives a joint.
     pub fn start_training(&mut self) {
-        let fingers: Vec<usize> = (0..NUM_FINGERS).filter(|&f| self.templates[f].is_some()).collect();
+        let fingers: Vec<usize> =
+            (0..NUM_FINGERS).filter(|&f| self.templates[f].is_some() && self.joint_of[f].is_some()).collect();
         if let Some(&first) = fingers.first() {
             self.start(Step::Train(first), Vec::new(), fingers, false);
         }
@@ -1453,7 +1522,8 @@ impl FingerControl {
         if !run.train_after {
             return None;
         }
-        run.train = run.calibrate.iter().copied().filter(|&g| self.templates[g].is_some()).collect();
+        // a finger that's off is still calibrated (the fit needs its pattern) but has nothing to practise on
+        run.train = run.calibrate.iter().copied().filter(|&g| self.templates[g].is_some() && self.joint_of[g].is_some()).collect();
         run.train.first().map(|&g| Step::Train(g))
     }
 
@@ -1982,7 +2052,7 @@ mod tests {
         assert_eq!(u.hold(&mut fc, 0, 0.0, 1.0), [0.0; NUM_JOINTS], "relaxed hand holds still");
         for f in 0..NUM_FINGERS {
             let b = fc.bands(f);
-            let j = fc.joints()[f];
+            let j = fc.joints()[f].unwrap();
             let faint = u.hold(&mut fc, f, b.level, 1.5);
             assert!(faint[j] < 0.0, "finger {f} faint: {faint:?} {b:?} power {:?}", fc.powers());
             assert!(faint.iter().enumerate().all(|(k, &v)| k == j || v == 0.0), "finger {f} faint: {faint:?}");
@@ -2027,7 +2097,7 @@ mod tests {
         // simple bands: a strong movement is just a strong +, held as long as it lasts,
         // even when the whole hand joins in (which looks a lot like a raised arm's tone)
         let (mut fc, mut u) = calibrated_simple(User::new(43));
-        let j = fc.joints()[2];
+        let j = fc.joints()[2].unwrap();
         for (label, drive) in [("middle flexed hard", [0.0, 0.0, 1.0, 0.0]), ("whole hand", [0.6, 0.6, 1.0, 0.6])] {
             u.drive = drive;
             let mut stalled = 0;
@@ -2153,7 +2223,7 @@ mod tests {
             // and the fingers still work with the arm up
             for f in [1, 3] {
                 let b = fc.bands(f);
-                let j = fc.joints()[f];
+                let j = fc.joints()[f].unwrap();
                 let faint = u.hold(&mut fc, f, b.level, 1.5);
                 assert!(faint[j] < 0.0, "posture {posture}, finger {f} faint: {faint:?} {b:?} {:?}", fc.powers());
                 let firm = u.hold(&mut fc, f, b.plus_target, 2.0);
@@ -2196,7 +2266,7 @@ mod tests {
         }
         for f in 0..NUM_FINGERS {
             let b = fc.bands(f);
-            let j = fc.joints()[f];
+            let j = fc.joints()[f].unwrap();
             let faint = u.hold(&mut fc, f, (b.rest_exit + b.plus_exit) / 2.0, 1.5);
             assert!(faint[j] < 0.0 && faint.iter().enumerate().all(|(k, &v)| k == j || v == 0.0), "finger {f}: {faint:?}");
             let firm = u.hold(&mut fc, f, (b.plus_enter + 1.0) / 2.0, 1.5);
@@ -2308,7 +2378,54 @@ mod tests {
         u.off = Some(3); // the ring finger's strongest site
         let b = fc.bands(3);
         let firm = u.hold(&mut fc, 3, (b.plus_enter + 1.0) / 2.0, 2.0);
-        assert!(firm[fc.joints()[3]] > 0.0, "ring still decoded from the other sites: {firm:?} {:?}", fc.powers());
+        assert!(firm[fc.joints()[3].unwrap()] > 0.0, "ring still decoded from the other sites: {firm:?} {:?}", fc.powers());
         assert_eq!(u.hold(&mut fc, 3, 0.0, 1.0), [0.0; NUM_JOINTS]);
+    }
+
+    #[test]
+    fn saved_calibration_decodes_the_same_after_restore() {
+        let (mut fc, _) = calibrated(7, true);
+        let bytes = bincode::serialize(&fc.calibration()).unwrap();
+        let mut restored = adaptive();
+        restored.restore(bincode::deserialize(&bytes).unwrap());
+        fc.reset_state();
+        assert!(restored.trained());
+
+        let mut rng = 99;
+        for t in 0..samples(12.0) {
+            // each finger in turn: rest, faint, then firm
+            let f = (t / samples(1.0)) as usize % NUM_FINGERS;
+            let drive = [0.0, 0.15, 0.4][(t / samples(4.0)) as usize % 3];
+            let env = std::array::from_fn(|c| (3.0 * (1.0 + 0.12 * noise(&mut rng)) + 40.0 * drive * PATTERNS[f][c]) as f32);
+            fc.process(&env, &[true; NUM_CHANNELS]);
+            restored.process(&env, &[true; NUM_CHANNELS]);
+            assert_eq!(fc.powers(), restored.powers());
+            assert_eq!(fc.joint_inputs(), restored.joint_inputs());
+        }
+    }
+
+    #[test]
+    fn a_finger_turned_off_drives_nothing_and_is_not_trained() {
+        let (mut fc, mut u) = calibrated_simple(User::new(11));
+        let firm = (fc.bands(1).plus_enter + 1.0) / 2.0;
+        assert!(u.hold(&mut fc, 1, firm, 2.0)[fc.joints()[1].unwrap()] > 0.0);
+        u.hold(&mut fc, 1, 0.0, 1.0);
+
+        fc.set_joint(1, None);
+        assert_eq!(u.hold(&mut fc, 1, firm, 2.0), [0.0; NUM_JOINTS]);
+        // the other fingers still work
+        let firm0 = (fc.bands(0).plus_enter + 1.0) / 2.0;
+        assert!(u.hold(&mut fc, 0, firm0, 2.0)[fc.joints()[0].unwrap()] > 0.0);
+
+        fc.start_training();
+        let mut trained = Vec::new();
+        while let Some(st) = fc.status() {
+            if !trained.contains(&st.step.finger()) {
+                trained.push(st.step.finger());
+            }
+            u.follow(&mut fc);
+        }
+        assert!(!trained.contains(&Some(1)), "trained {trained:?}");
+        assert!(trained.contains(&Some(0)));
     }
 }

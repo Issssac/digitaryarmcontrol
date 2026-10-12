@@ -8,6 +8,8 @@
 //!   ones. It is a class-conditional Gaussian over log envelopes with a pooled,
 //!   shrunk covariance, i.e. the LDA model.
 
+use serde::{Deserialize, Serialize};
+
 use super::cyton::NUM_CHANNELS;
 
 pub type Features = [f64; NUM_CHANNELS];
@@ -18,7 +20,7 @@ const EPS_UV: f64 = 0.5;
 /// few, strongly correlated samples and with channels that have no contact.
 const SHRINKAGE: f64 = 0.15;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Label {
     Rest,
     /// The movement calibrated on this channel's electrode site.

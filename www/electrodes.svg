@@ -45,7 +45,7 @@
   <g font-size="13" fill="#e3e6eb">
     <path d="M 305 157 L 246 157" stroke="#4da3ff" stroke-width="1"/>
     <text x="310" y="155"><tspan font-weight="700" fill="#4da3ff">CH3</tspan> Anterior deltoid</text>
-    <text x="310" y="171" font-size="11" fill="#8b919c">Base pitch + (up) · front of shoulder</text>
+    <text x="310" y="171" font-size="11" fill="#8b919c">Shoulder + (lean forward) · front of shoulder</text>
 
     <path d="M 155 269 L 217 269" stroke="#ff9f43" stroke-width="1"/>
     <text x="150" y="267" text-anchor="end"><tspan font-weight="700" fill="#ff9f43">CH5</tspan> Biceps</text>
@@ -53,15 +53,15 @@
 
     <path d="M 155 404 L 173 404" stroke="#b48cff" stroke-width="1"/>
     <text x="150" y="402" text-anchor="end"><tspan font-weight="700" fill="#b48cff">CH2</tspan> Brachioradialis</text>
-    <text x="150" y="418" font-size="11" fill="#8b919c" text-anchor="end">Base yaw − · thumb-side forearm</text>
+    <text x="150" y="418" font-size="11" fill="#8b919c" text-anchor="end">Base − · thumb-side forearm</text>
 
     <path d="M 305 389 L 262 389" stroke="#b48cff" stroke-width="1"/>
     <text x="310" y="387"><tspan font-weight="700" fill="#b48cff">CH1</tspan> Pronator teres</text>
-    <text x="310" y="403" font-size="11" fill="#8b919c">Base yaw + · just below elbow crease</text>
+    <text x="310" y="403" font-size="11" fill="#8b919c">Base + · just below elbow crease</text>
 
     <path d="M 305 464 L 249 464" stroke="#3ddc97" stroke-width="1"/>
     <text x="310" y="462"><tspan font-weight="700" fill="#3ddc97">CH7</tspan> Wrist flexors</text>
-    <text x="310" y="478" font-size="11" fill="#8b919c">Wrist + · inner forearm, upper third</text>
+    <text x="310" y="478" font-size="11" fill="#8b919c">Gripper + (open) · inner forearm, upper third</text>
   </g>
   <text x="220" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ thumb side</text>
   <text x="240" y="712" font-size="11" fill="#8b919c">body side ▶</text>
@@ -85,7 +85,7 @@
   <g font-size="13" fill="#e3e6eb">
     <path d="M 720 159 L 660 159" stroke="#4da3ff" stroke-width="1"/>
     <text x="725" y="157"><tspan font-weight="700" fill="#4da3ff">CH4</tspan> Posterior deltoid</text>
-    <text x="725" y="173" font-size="11" fill="#8b919c">Base pitch − (down) · back of shoulder</text>
+    <text x="725" y="173" font-size="11" fill="#8b919c">Shoulder − (lean back) · back of shoulder</text>
 
     <path d="M 720 267 L 658 267" stroke="#ff9f43" stroke-width="1"/>
     <text x="725" y="265"><tspan font-weight="700" fill="#ff9f43">CH6</tspan> Triceps</text>
@@ -101,7 +101,7 @@
 
     <path d="M 720 441 L 668 441" stroke="#3ddc97" stroke-width="1"/>
     <text x="725" y="439"><tspan font-weight="700" fill="#3ddc97">CH8</tspan> Wrist extensors</text>
-    <text x="725" y="455" font-size="11" fill="#8b919c">Wrist − · outer forearm, upper third</text>
+    <text x="725" y="455" font-size="11" fill="#8b919c">Gripper − (close) · outer forearm, upper third</text>
   </g>
   <text x="630" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ body side</text>
   <text x="650" y="712" font-size="11" fill="#8b919c">thumb side ▶</text>
@@ -174,10 +174,10 @@
   <!-- legend -->
   <text x="910" y="616" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">JOINT  ·  + CHANNEL / − CHANNEL</text>
   <g font-size="12.5" fill="#e3e6eb">
-    <rect x="910" y="630" width="12" height="12" rx="3" fill="#b48cff"/><text x="930" y="641">Base yaw · CH1 / CH2</text>
-    <rect x="1110" y="630" width="12" height="12" rx="3" fill="#4da3ff"/><text x="1130" y="641">Base pitch · CH3 / CH4</text>
+    <rect x="910" y="630" width="12" height="12" rx="3" fill="#b48cff"/><text x="930" y="641">Base · CH1 / CH2</text>
+    <rect x="1110" y="630" width="12" height="12" rx="3" fill="#4da3ff"/><text x="1130" y="641">Shoulder · CH3 / CH4</text>
     <rect x="910" y="656" width="12" height="12" rx="3" fill="#ff9f43"/><text x="930" y="667">Elbow · CH5 / CH6</text>
-    <rect x="1110" y="656" width="12" height="12" rx="3" fill="#3ddc97"/><text x="1130" y="667">Wrist · CH7 / CH8</text>
+    <rect x="1110" y="656" width="12" height="12" rx="3" fill="#3ddc97"/><text x="1130" y="667">Gripper · CH7 / CH8</text>
   </g>
   <text x="910" y="700" font-size="11" fill="#8b919c">Flexing the + muscle turns the joint one way, the − muscle the other.</text>
 </svg>

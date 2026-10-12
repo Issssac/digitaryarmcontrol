@@ -89,6 +89,12 @@ button.small { padding: 1px 7px; font-size: 11px; }
 .field { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .field input[type=range] { flex: 1; }
 .field span { width: 3.5em; text-align: right; }
+.field[hidden] { display: none; }
+.field input[type=text] {
+  flex: 1; min-width: 0; font: inherit; color: var(--text); background: #2b2f38;
+  border: 1px solid #3a3f4a; border-radius: 6px; padding: 5px 10px;
+}
+.field input[type=text]:disabled { opacity: .45; }
 
 /* joints */
 .joint { display: grid; grid-template-columns: 74px 1fr 60px; align-items: center; gap: 8px; margin: 6px 0; }
@@ -96,6 +102,8 @@ button.small { padding: 1px 7px; font-size: 11px; }
 .joint .name small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
 .joint .angle { text-align: right; }
 .joint input[type=range] { width: 100%; }
+.joint button.gripper { justify-self: start; min-width: 5.5em; }
+.joint button.gripper.active { background: #0f3b47; border-color: #1f6577; color: var(--accent); }
 .joint .meter { grid-column: 2 / 4; height: 4px; background: var(--line); border-radius: 2px; position: relative; overflow: hidden; }
 .joint .meter div { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--accent); }
 
