@@ -1,11 +1,10 @@
-//! WebGL2 renderer: one Blinn-Phong program, unit meshes scaled per part,
-//! planar projected shadows, a ground grid and an end-effector trail.
+//! WebGL2 renderer: one Blinn-Phong program, unit meshes scaled per part (or
+//! the arm's own link meshes), planar projected shadows on the desk, a grid and
+//! an end-effector trail.
 
 pub mod camera;
 pub mod mesh;
 pub mod scene;
-
-use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat3, Mat4, Quat, Vec3};
 use wasm_bindgen::{JsCast, JsValue};
@@ -15,17 +14,15 @@ use crate::arm::Arm;
 use crate::world::World;
 use camera::OrbitCamera;
 use mesh::GpuMesh;
-use scene::{Color, Shape};
+use scene::{Color, Shape, LINK_MESHES};
 
 const BACKGROUND: Color = [0.10, 0.11, 0.13, 1.0];
 const GROUND: Color = [0.16, 0.17, 0.19, 1.0];
-const WALL: Color = [0.19, 0.20, 0.23, 1.0];
 const GRID: Color = [0.24, 0.26, 0.30, 1.0];
 const SHADOW: Color = [0.0, 0.0, 0.0, 0.35];
 const TRAIL: Color = [0.20, 0.85, 1.00, 1.0];
-/// Direction *towards* the light: above and in front of the wall, so shadows
-/// land on both the floor and the wall.
-const LIGHT_DIR: Vec3 = Vec3::new(0.6, 1.0, 0.35);
+/// Direction *towards* the light: high, in front and to one side.
+const LIGHT_DIR: Vec3 = Vec3::new(0.5, 1.0, 0.4);
 
 const VERTEX_SHADER: &str = r#"#version 300 es
 layout(location = 0) in vec3 a_pos;
@@ -68,7 +65,7 @@ void main() {
         col = pow(ambient + albedo * diff * 0.9 + vec3(spec), vec3(1.0 / 2.2));
     }
     float d = length(u_eye - v_world);
-    col = mix(col, u_fog, clamp((d - 2.5) / 6.0, 0.0, 1.0));
+    col = mix(col, u_fog, clamp((d - 1.5) / 4.0, 0.0, 1.0));
     o_color = vec4(col, u_color.a);
 }
 "#;
@@ -92,6 +89,8 @@ pub struct Renderer {
     cube: GpuMesh,
     cylinder: GpuMesh,
     grid: GpuMesh,
+    /// Waveshare's link meshes (scene::LINK_MESHES), once the page has loaded them.
+    links: [Option<GpuMesh>; LINK_MESHES.len()],
     trail: GpuMesh,
     trail_data: Vec<f32>,
 }
@@ -123,10 +122,22 @@ impl Renderer {
 
         let cube = GpuMesh::new(&gl, &mesh::cube(), GL::TRIANGLES, false)?;
         let cylinder = GpuMesh::new(&gl, &mesh::cylinder(32), GL::TRIANGLES, false)?;
-        let grid = GpuMesh::new(&gl, &mesh::grid(2.0, 0.1), GL::LINES, false)?;
+        let grid = GpuMesh::new(&gl, &mesh::grid(1.0, 0.05), GL::LINES, false)?;
         let trail = GpuMesh::new(&gl, &[], GL::LINE_STRIP, true)?;
 
-        Ok(Self { gl, canvas, program, u, cube, cylinder, grid, trail, trail_data: Vec::new() })
+        let links = Default::default();
+        Ok(Self { gl, canvas, program, u, cube, cylinder, grid, links, trail, trail_data: Vec::new() })
+    }
+
+    /// Binary STL for link `i` of scene::LINK_MESHES (in metres, in that link's frame).
+    pub fn load_link(&mut self, i: usize, bytes: &[u8]) -> Result<(), JsValue> {
+        let slot = self.links.get_mut(i).ok_or("no such link")?;
+        *slot = Some(GpuMesh::new(&self.gl, &mesh::stl(bytes)?, GL::TRIANGLES, false)?);
+        Ok(())
+    }
+
+    fn meshes_ready(&self) -> bool {
+        self.links.iter().all(Option::is_some)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -158,30 +169,20 @@ impl Renderer {
         gl.uniform3fv_with_f32_array(Some(&self.u.eye), &eye.to_array());
         gl.uniform3f(Some(&self.u.fog), r, g, b);
 
-        // ground slab (top face at y = 0), wall slab (front face at x = 0), grids
-        let ground = Mat4::from_scale_rotation_translation(Vec3::new(12.0, 0.02, 12.0), Quat::IDENTITY, Vec3::Y * -0.01);
+        // desk slab (top face at y = 0) and its grid
+        let ground = Mat4::from_scale_rotation_translation(Vec3::new(6.0, 0.02, 6.0), Quat::IDENTITY, Vec3::Y * -0.01);
         self.draw(&self.cube, ground, GROUND, true);
-        let wall = Mat4::from_scale_rotation_translation(Vec3::new(0.04, 4.0, 12.0), Quat::IDENTITY, Vec3::new(-0.02, 2.0, 0.0));
-        self.draw(&self.cube, wall, WALL, true);
-        self.draw(&self.grid, Mat4::from_translation(Vec3::Y * 0.0015), GRID, false);
-        let wall_grid = Mat4::from_translation(Vec3::new(0.0015, 2.0, 0.0)) * Mat4::from_rotation_z(FRAC_PI_2);
-        self.draw(&self.grid, wall_grid, GRID, false);
+        self.draw(&self.grid, Mat4::from_translation(Vec3::Y * 0.0008), GRID, false);
 
-        // Planar shadows: every part projected onto the floor and onto the wall.
-        // Each point's shadow lands on whichever plane the light ray hits first;
-        // the other projection falls behind the wall or under the floor and is
-        // hidden by the depth test. Within one plane all shadow fragments share
-        // the same depth, so overlaps fail the LESS test and don't double-darken.
-        let mut parts = scene::arm_parts(arm, world.grip());
+        // Planar shadows: every part projected onto the desk. All shadow fragments
+        // share one depth, so overlaps fail the LESS test and don't double-darken.
+        let mut parts = scene::arm_parts(arm, self.meshes_ready());
         parts.extend(scene::world_parts(world, arm.frames().tool));
-        let onto_floor = shadow_matrix(LIGHT_DIR, Vec3::Y, 0.003);
-        let onto_wall = shadow_matrix(LIGHT_DIR, Vec3::X, 0.003);
+        let onto_desk = shadow_matrix(LIGHT_DIR, Vec3::Y, 0.0015);
         gl.enable(GL::BLEND);
         gl.blend_func(GL::SRC_ALPHA, GL::ONE_MINUS_SRC_ALPHA);
-        for flatten in [onto_floor, onto_wall] {
-            for p in &parts {
-                self.draw(self.mesh(p.shape), flatten * p.model, SHADOW, false);
-            }
+        for p in &parts {
+            self.draw(self.mesh(p.shape), onto_desk * p.model, SHADOW, false);
         }
         gl.disable(GL::BLEND);
 
@@ -198,6 +199,7 @@ impl Renderer {
         match shape {
             Shape::Cube => &self.cube,
             Shape::Cylinder => &self.cylinder,
+            Shape::Link(i) => self.links[i].as_ref().unwrap_or(&self.cube),
         }
     }
 

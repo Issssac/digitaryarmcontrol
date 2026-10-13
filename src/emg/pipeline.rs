@@ -16,6 +16,8 @@
 //!   electrodes doesn't move other joints;
 //! - direct: each joint follows its own pair of channels.
 
+use serde::{Deserialize, Serialize};
+
 use super::cyton::{Sample, NUM_CHANNELS, SAMPLE_RATE, UV_PER_COUNT};
 use super::decoder::{self, ClassReport, Features, Imputer, Label, Synergy};
 use super::filter::{Biquad, BUTTER2_Q, BUTTER4_Q};
@@ -318,6 +320,20 @@ pub struct EmgPipeline {
     active: Vec<usize>,
 }
 
+/// Everything a calibration learned, to save and restore it. The decoder is
+/// retrained from the recordings on restore. Mapping, threshold and gain are
+/// panel settings and are saved by the page.
+#[derive(Serialize, Deserialize)]
+pub struct Calibration {
+    rest: [f32; NUM_CHANNELS],
+    max: [f32; NUM_CHANNELS],
+    rest_done: bool,
+    max_done: [bool; NUM_CHANNELS],
+    seen: [bool; NUM_CHANNELS],
+    via_others: [bool; NUM_CHANNELS],
+    training: Vec<(Label, Vec<Features>)>,
+}
+
 /// What the pattern decoder currently reads.
 pub struct Intent {
     /// (channel whose movement it is, intensity) for up to two simultaneous movements.
@@ -357,6 +373,30 @@ impl EmgPipeline {
             move_engaged: Vec::new(),
             active: Vec::new(),
         }
+    }
+
+    pub fn calibration(&self) -> Calibration {
+        Calibration {
+            rest: self.rest,
+            max: self.max,
+            rest_done: self.rest_done,
+            max_done: self.max_done,
+            seen: self.seen,
+            via_others: self.via_others,
+            training: self.training.clone(),
+        }
+    }
+
+    pub fn restore(&mut self, cal: Calibration) {
+        self.cal = None;
+        self.rest = cal.rest;
+        self.max = cal.max;
+        self.rest_done = cal.rest_done;
+        self.max_done = cal.max_done;
+        self.seen = cal.seen;
+        self.via_others = cal.via_others;
+        self.training = cal.training;
+        self.retrain();
     }
 
     /// Reset filter state (keeps calibration and mapping).
@@ -1285,5 +1325,30 @@ mod tests {
         p.cancel_calibration();
         assert!(p.calibration_status().is_none());
         assert!(!p.is_calibrated());
+    }
+
+    #[test]
+    fn saved_calibration_decodes_the_same_after_restore() {
+        let mut p = EmgPipeline::new();
+        let mut sim = Sim::new(5);
+        sim.crosstalk = true;
+        sim.run(&mut p, 1.0, None);
+        calibrate(&mut p, &mut sim);
+        assert!(p.is_calibrated() && p.decoder_trained());
+
+        let bytes = bincode::serialize(&p.calibration()).unwrap();
+        let mut restored = EmgPipeline::new();
+        restored.restore(bincode::deserialize(&bytes).unwrap());
+        p.reset_filters();
+        assert!(restored.is_calibrated() && restored.decoder_trained());
+
+        for ch in [None, Some(4), None, Some(1)] {
+            for _ in 0..samples(1.0) {
+                let s = sim.sample(ch);
+                p.process(&s);
+                restored.process(&s);
+                assert_eq!(p.joint_inputs(), restored.joint_inputs());
+            }
+        }
     }
 }

@@ -1,3 +1,6 @@
 /target
 /www/pkg
 .widgex/
+/calibration.json
+/calibration.tmp
+/www/models

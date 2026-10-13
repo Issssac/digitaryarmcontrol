@@ -1,9 +1,11 @@
 # EMG Arm
 
-Drive a simulated 4-axis wall-mounted robot arm with forearm/upper-arm muscle
-signals from an OpenBCI Cyton. The arm sticks straight out of the wall. Its base
-is a two-axis gimbal: yaw (left/right), then pitch (up/down). After that come an
-elbow and a wrist, which both bend in the arm's plane, and a gripper on the end. Kinematics, rendering (WebGL2) and the EMG signal chain are Rust
+Drive a Waveshare RoArm-M2-S desktop arm, simulated and optionally the real one,
+with forearm/upper-arm muscle signals from an OpenBCI Cyton. The simulated arm uses
+Waveshare's own joint chain and link meshes, so its four joints mean exactly what
+the real arm's do: the base turns (left/right), the shoulder leans the upper arm
+forward and back, the elbow bends the forearm, and the fourth joint opens and
+closes the gripper. Kinematics, rendering (WebGL2) and the EMG signal chain are Rust
 compiled to WASM; the page talks to the Cyton dongle directly via Web Serial.
 
 ## Build & run
@@ -20,22 +22,44 @@ Build and serve:
 
 ```powershell
 wasm-pack build --target web --out-dir www/pkg --no-typescript
+python fetch_models.py   # once: Waveshare's arm meshes (MIT) into www/models/
 python serve.py          # serves www/ on :8080 with caching disabled
 ```
+
+Without the meshes the arm is drawn from simple shapes; everything else works the same.
 
 Open <http://localhost:8080> in **Chrome or Edge** (Web Serial needs a Chromium
 browser and a secure context; `localhost` counts).
 
 Tests (parser, filters, pipeline, kinematics): `cargo test`
 
+### WiFi Shield instead of the dongle
+
+Set **Link → WiFi Shield** and enter the shield's IP before clicking
+Connect. The page has to be served by `serve.py`, which bridges the shield: it
+proxies the shield's HTTP API (`/shield/api/...`, since the shield sends no CORS
+headers) and runs the TCP server on port **3000** that the shield streams raw
+packets to, relaying them to the page (`/shield/stream`).
+
+- In AP mode, join the shield's `OpenBCI-xxxx` network; the shield is at `192.168.4.1`.
+  On your own WiFi, use the IP your router gave it.
+- The shield switches the Cyton to 1000 Hz; Connect sets it back to 250 Hz (`~6`)
+  along with the usual channel settings.
+- **"nothing reached …:3000"**: allow Python through Windows Firewall on private
+  networks (inbound TCP 3000).
+
 ## Using it
 
-- **Manual**: Q/A base yaw, W/S base pitch, E/D elbow, R/F wrist, or drag the sliders.
+- **Manual**: Q/A base, W/S shoulder, E/D elbow, or drag the sliders.
+- **Gripper**: a button, not a joint you steer: **Open/Close** in the Joints panel, or
+  R open, F close, Space toggles, in any control mode. It moves to fully open (60°) or
+  closed by itself, and EMG and drift leave it alone. To pick up the box, open it,
+  bring the tool point to the box and close it; opening it again drops the box. The arm won't lower the tool point into the desk.
   Drag the 3D view to orbit, scroll to zoom.
 - **Simulate**: generates a fake Cyton byte stream (DC offsets, 60 Hz hum, noise)
   that goes through the real parser and filters. Holding a joint key "contracts"
   the channel mapped to it, so you can try calibration and mapping with no hardware.
-- **Connect**: pick the dongle's COM port. The page resets the board, configures all 8
+- **Connect**: over WiFi, talks to the shield at the given IP; over USB, pick the dongle's COM port. The page resets the board, configures all 8
   channels for EMG (gain 24, bias on, SRB2 per the **Electrodes** setting) and starts streaming.
 
 ### First session with electrodes
@@ -83,10 +107,13 @@ also under **Electrode guide**).
   - Single row (10 pads): REF on the elbow point.
   - Pairs (17 pads): two pads per site along the forearm.
 - **Each finger drives one joint.** Defaults (change them in the panel):
-  - Thumb → base yaw
-  - Index → base pitch
+  - Thumb → base
+  - Index → shoulder
   - Middle → elbow
-  - Ring + little → wrist
+  - Ring + little → off
+  - **Off** takes a finger out of the control: it drives nothing and is skipped in
+    training. It's still calibrated, since the fit needs every finger's pattern to tell
+    the others apart.
 - **Simple bands (the default for now):** power under ¼ of the ceiling holds, ¼ to ½
   drives −, and over ½ drives + with no upper cap. There's a little hysteresis (back to
   rest under 0.2, back to − under 0.45), and real movements are *not* rejected. Turn
@@ -162,8 +189,38 @@ the right finger ("isolated"), training hits, and the final faint level.
 **Redo** on a finger's row recalibrates just that finger. **Train only** practises
 again.
 
-**Drift home when idle** (Joints panel, on by default): under EMG control, a joint
-with no command for 1.5 s eases back to the home pose at up to 6°/s.
+**Drift home when idle** (Joints panel, on by default): under EMG control, once no
+joint has had a command for 1.5 s, the arm eases back to the home pose at up to 6°/s.
+A joint you're holding still doesn't drift while you drive another one, and nothing
+drifts while the real arm is following.
+
+## Real arm (Waveshare RoArm-M2-S)
+
+The simulation can drive a RoArm-M2-S plugged into this computer by USB, with the
+same JSON serial commands as
+[roarm-haptic-bridge](https://github.com/maxwellarmstrong/roarm-haptic-bridge)
+(`www/roarm.js`). Close that repo's dashboard first: only one program can hold the port.
+
+The two share joint angles 1:1, and the panel lists both side by side.
+
+1. **Real arm → Connect arm**, pick the RoArm's COM port (not the Cyton dongle).
+   The simulated arm jumps to the real arm's pose and keeps mirroring it: move the
+   real arm by hand and the simulation follows. Keys and EMG don't move anything yet.
+2. Tick **Follow the simulation** to switch over. The simulation starts from the real
+   arm's pose, so nothing jumps, and from then on the real arm is sent the
+   simulation's pose (manual keys or EMG). Untick it to go back to mirroring.
+
+Targets are clamped to the arm's limits (base ±180°, shoulder ±90°, elbow −20…169°,
+gripper −10…90°) and move at most 60°/s. Unticking Follow, disconnecting, or the
+arm going silent for 1 s stops the commands, and the arm holds where it is.
+
+## Saved calibration
+
+Both schemes' calibrations and the panel settings (mapping, threshold, gain, speed,
+finger → joint, bands, decoder, mains, drift) are saved to `calibration.json` next
+to `serve.py` whenever a calibration finishes or a setting changes, and loaded
+when the page opens. Delete the file to start over. It's per person and per
+electrode placement, so recalibrate after moving electrodes.
 
 ## Electrode placement (default mapping)
 
@@ -186,10 +243,9 @@ channel's negative input, the **top** row its positive input. Pick the matching
 
 | Joint     | + channel                | − channel                    |
 |-----------|--------------------------|------------------------------|
-| Base yaw  | CH1 pronator teres       | CH2 brachioradialis          |
-| Base pitch| CH3 anterior deltoid     | CH4 posterior deltoid        |
+| Base      | CH1 pronator teres       | CH2 brachioradialis          |
+| Shoulder  | CH3 anterior deltoid     | CH4 posterior deltoid        |
 | Elbow     | CH5 biceps               | CH6 triceps                  |
-| Wrist     | CH7 wrist flexors        | CH8 wrist extensors          |
 
 You can reassign any channel to any joint direction in the **Mapping** table.
 
@@ -260,7 +316,8 @@ from about 42 µV down to 2–4 µV.
 ## Layout
 
 ```
-src/arm.rs            wall mount, joint limits, velocity integration, forward kinematics
+src/arm.rs            RoArm-M2-S joint chain (Waveshare URDF), limits, velocity integration, desk stop
+src/world.rs          desk and box: open/close the gripper on it to pick it up
 src/render/           WebGL2 renderer, meshes, orbit camera, arm → parts
 src/emg/cyton.rs      33-byte packet parser (resync, drop counting, µV scaling)
 src/emg/filter.rs     biquads
@@ -268,5 +325,6 @@ src/emg/pipeline.rs   envelope, guided calibration, decoder / channel-pair → j
 src/emg/decoder.rs    synergy (NNLS) decoder, offline-channel imputer, cross-validation report
 src/emg/finger.rs     finger grid: per-finger power, rest/faint/firmer bands, phase 1 + 2 coach
 src/lib.rs            wasm-bindgen API used by the page
-www/                  index.html, main.js (UI), serial.js (Web Serial), simulator.js
+www/                  index.html, main.js (UI), serial.js (Web Serial), wifi.js (WiFi Shield),
+                      roarm.js (real arm), simulator.js
 ```

@@ -65,6 +65,24 @@ pub fn cylinder(segments: u32) -> Vec<f32> {
     v
 }
 
+/// Binary STL as flat-shaded triangles. Normals are computed from the winding,
+/// since exported files often leave theirs at zero.
+pub fn stl(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    let count = bytes.get(80..84).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let count = count.filter(|&n| bytes.len() == 84 + 50 * n).ok_or("not a binary STL file")?;
+    let f = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let mut v = Vec::with_capacity(count * 18);
+    for t in 0..count {
+        let at = 84 + 50 * t + 12; // skip the stored normal
+        let p: [Vec3; 3] = std::array::from_fn(|k| Vec3::new(f(at + 12 * k), f(at + 12 * k + 4), f(at + 12 * k + 8)));
+        let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+        for q in p {
+            push(&mut v, q, n);
+        }
+    }
+    Ok(v)
+}
+
 /// Ground grid in the XZ plane as GL_LINES.
 pub fn grid(half: f32, step: f32) -> Vec<f32> {
     let mut v = Vec::new();
@@ -111,5 +129,24 @@ impl GpuMesh {
         gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self.vbo));
         gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &js_sys::Float32Array::from(data), usage);
         self.count = data.len() as i32 / FLOATS_PER_VERTEX;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stl_triangles_get_normals_from_their_winding() {
+        let mut b = vec![0u8; 80];
+        b.extend_from_slice(&1u32.to_le_bytes());
+        for x in [0.0f32; 3].iter().chain(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]) {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        b.extend_from_slice(&[0, 0]);
+        let v = stl(&b).unwrap();
+        assert_eq!(v.len(), 18);
+        assert_eq!(&v[6..12], &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(stl(&b[..b.len() - 1]).is_err());
     }
 }

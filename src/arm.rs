@@ -1,28 +1,20 @@
-//! 4-axis wall-mounted arm: joint state, velocity integration and forward kinematics.
+//! Waveshare RoArm-M2-S: joint state, velocity integration and forward kinematics.
 //!
-//! Convention: Y is up, metres and radians. The wall is the plane x = 0 and the
-//! arm sticks straight out along +X when every joint is at zero. The base is a
-//! two-axis gimbal: yaw about the vertical (left/right), then pitch about the
-//! horizontal (up/down). Elbow and wrist are further pitch joints in the arm's
-//! plane. Every link extends along the +Y axis of its joint frame and pitch
-//! joints rotate about the local Z axis; positive pitch bends upwards.
+//! The joint chain is Waveshare's own (roarm_description/urdf/roarm_m2.xacro,
+//! the same origins roarm-haptic-bridge renders with), and joint angles mean
+//! exactly what the real arm reports, so the simulation and the arm can mirror
+//! each other 1:1. At all zeros the arm points straight up; positive shoulder
+//! leans it forward, elbow 90° holds the forearm level (the arm's start-up
+//! pose), and positive base turns it counter-clockwise seen from above. The
+//! fourth joint opens the gripper jaw (0 = closed).
+//!
+//! The URDF is Z-up; the scene is Y-up with X forward: world = Rx(−90°) · URDF.
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use glam::{Mat4, Vec3};
 
 pub const NUM_JOINTS: usize = 4;
-
-/// Height of the wall mount above the floor.
-pub const MOUNT_H: f32 = 0.85;
-/// Distance from the wall to the vertical yaw axis.
-pub const YAW_X: f32 = 0.085;
-/// Distance from the yaw axis to the horizontal pitch axis.
-pub const PITCH_OFF: f32 = 0.12;
-pub const UPPER_L: f32 = 0.35;
-pub const FORE_L: f32 = 0.30;
-/// Wrist axis to where the claw's fingertips meet (the tool point).
-pub const WRIST_L: f32 = 0.13;
 
 /// Time constant (s) of the first-order velocity smoothing.
 const VEL_TAU: f32 = 0.05;
@@ -35,31 +27,49 @@ pub struct JointSpec {
     pub max_speed: f32,
 }
 
-const fn deg(d: f32) -> f32 {
-    d * std::f32::consts::PI / 180.0
+pub const fn deg(d: f32) -> f32 {
+    d * PI / 180.0
 }
 
+/// Limits as roarm-haptic-bridge enforces them on the real arm.
 pub const JOINTS: [JointSpec; NUM_JOINTS] = [
-    // ±80° keeps the arm from swinging flat against the wall.
-    JointSpec { name: "Base yaw", min: deg(-80.0), max: deg(80.0), max_speed: deg(60.0) },
-    JointSpec { name: "Base pitch", min: deg(-75.0), max: deg(75.0), max_speed: deg(50.0) },
-    JointSpec { name: "Elbow", min: deg(-140.0), max: deg(140.0), max_speed: deg(75.0) },
-    JointSpec { name: "Wrist", min: deg(-110.0), max: deg(110.0), max_speed: deg(120.0) },
+    JointSpec { name: "Base", min: deg(-180.0), max: deg(180.0), max_speed: deg(60.0) },
+    JointSpec { name: "Shoulder", min: deg(-90.0), max: deg(90.0), max_speed: deg(45.0) },
+    JointSpec { name: "Elbow", min: deg(-20.0), max: deg(169.0), max_speed: deg(60.0) },
+    JointSpec { name: "Gripper", min: deg(-10.0), max: deg(90.0), max_speed: deg(90.0) },
 ];
 
-const HOME: [f32; NUM_JOINTS] = [deg(0.0), deg(25.0), deg(-60.0), deg(-35.0)];
+/// The arm's own start-up pose: upper arm up, forearm level, gripper closed.
+const HOME: [f32; NUM_JOINTS] = [0.0, 0.0, deg(90.0), 0.0];
+
+/// The tool point never goes lower than this above the desk the arm stands on:
+/// with Follow on, the real arm is sent the same pose.
+const MIN_TOOL_HEIGHT: f32 = 0.01;
 
 /// Idle drift back to the home pose: speed proportional to the distance, capped.
 const DRIFT_GAIN: f32 = 2.0;
 const DRIFT_MAX_SPEED: f32 = deg(6.0);
 
-/// World-space frames of each joint (origin at the joint, link along +Y).
+/// URDF joint origin: translation, then fixed roll-pitch-yaw (Rz · Ry · Rx).
+fn origin(xyz: [f32; 3], rpy: [f32; 3]) -> Mat4 {
+    Mat4::from_translation(Vec3::from(xyz))
+        * Mat4::from_rotation_z(rpy[2])
+        * Mat4::from_rotation_y(rpy[1])
+        * Mat4::from_rotation_x(rpy[0])
+}
+
+/// Tool point (between the jaw tips) in the elbow link's frame, as the bridge places it.
+const TCP: Vec3 = Vec3::new(0.002, -0.2802, 0.0);
+
+/// World-space frames of each link (the frame its mesh is modelled in). Every
+/// joint turns about its own frame's Z axis.
 pub struct Frames {
-    /// Vertical yaw axis at the wall (frame Y is vertical, X points out of the wall at q0 = 0).
-    pub yaw: Mat4,
-    pub pitch: Mat4,
-    pub elbow: Mat4,
-    pub wrist: Mat4,
+    pub base: Mat4,
+    pub link1: Mat4,
+    pub link2: Mat4,
+    pub link3: Mat4,
+    pub gripper: Mat4,
+    /// Tool point between the jaws: the end effector.
     pub tool: Mat4,
 }
 
@@ -93,6 +103,17 @@ impl Arm {
         self.q[joint]
     }
 
+    /// Puts the joints straight at these angles (radians, clamped), at rest.
+    pub fn set_angles(&mut self, q: [f32; NUM_JOINTS]) {
+        for (j, spec) in JOINTS.iter().enumerate() {
+            if q[j].is_finite() {
+                self.q[j] = q[j].clamp(spec.min, spec.max);
+            }
+        }
+        self.vel = [0.0; NUM_JOINTS];
+        self.input = [0.0; NUM_JOINTS];
+    }
+
     pub fn velocity(&self, joint: usize) -> f32 {
         self.vel[joint]
     }
@@ -104,6 +125,8 @@ impl Arm {
     }
 
     pub fn step(&mut self, dt: f32) {
+        let before = self.q;
+        let height = self.end_effector().y;
         let k = 1.0 - (-dt / VEL_TAU).exp();
         for (j, spec) in JOINTS.iter().enumerate() {
             let target = self.input[j] * spec.max_speed;
@@ -114,17 +137,26 @@ impl Arm {
                 self.vel[j] = 0.0;
             }
         }
+        // Shoulder and elbow stop where they would push the tool into the desk.
+        let now = self.end_effector().y;
+        if now < MIN_TOOL_HEIGHT && now < height {
+            for j in [1, 2] {
+                self.q[j] = before[j];
+                self.vel[j] = 0.0;
+            }
+        }
     }
 
     pub fn frames(&self) -> Frames {
         let [q0, q1, q2, q3] = self.q;
-        let yaw = Mat4::from_translation(Vec3::new(YAW_X, MOUNT_H, 0.0)) * Mat4::from_rotation_y(q0);
-        // The extra -90° turns the link axis (+Y) to point out of the wall at q1 = 0.
-        let pitch = yaw * Mat4::from_translation(Vec3::X * PITCH_OFF) * Mat4::from_rotation_z(q1 - FRAC_PI_2);
-        let elbow = pitch * Mat4::from_translation(Vec3::Y * UPPER_L) * Mat4::from_rotation_z(q2);
-        let wrist = elbow * Mat4::from_translation(Vec3::Y * FORE_L) * Mat4::from_rotation_z(q3);
-        let tool = wrist * Mat4::from_translation(Vec3::Y * WRIST_L);
-        Frames { yaw, pitch, elbow, wrist, tool }
+        let base = Mat4::from_rotation_x(-FRAC_PI_2);
+        let link1 = base * origin([0.0100000009, 0.0, 0.1230592705], [0.0; 3]) * Mat4::from_rotation_z(q0);
+        let link2 = link1 * origin([0.0; 3], [-FRAC_PI_2, -FRAC_PI_2, 0.0]) * Mat4::from_rotation_z(q1);
+        let link3 = link2 * origin([0.2368151329, 0.0300023995, 0.0], [0.0, 0.0, FRAC_PI_2]) * Mat4::from_rotation_z(q2);
+        let gripper =
+            link3 * origin([0.002906, -0.21599, -0.00066683], [-FRAC_PI_2, 0.0, -FRAC_PI_2]) * Mat4::from_rotation_z(q3);
+        let tool = link3 * Mat4::from_translation(TCP);
+        Frames { base, link1, link2, link3, gripper, tool }
     }
 
     pub fn end_effector(&self) -> Vec3 {
@@ -136,66 +168,74 @@ impl Arm {
 mod tests {
     use super::*;
 
-    const REACH: f32 = UPPER_L + FORE_L + WRIST_L;
-
     fn ee_at(q: [f32; NUM_JOINTS]) -> Vec3 {
         let mut arm = Arm::new();
-        arm.q = q;
+        arm.set_angles(q.map(deg));
         arm.end_effector()
     }
 
-    #[test]
-    fn zero_pose_sticks_straight_out_of_the_wall() {
-        let ee = ee_at([0.0; NUM_JOINTS]);
-        assert!((ee - Vec3::new(YAW_X + PITCH_OFF + REACH, MOUNT_H, 0.0)).length() < 1e-5);
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() < 1e-3
     }
 
     #[test]
-    fn positive_base_pitch_raises_the_arm() {
-        let ee = ee_at([0.0, deg(90.0), 0.0, 0.0]);
-        assert!((ee - Vec3::new(YAW_X + PITCH_OFF, MOUNT_H + REACH, 0.0)).length() < 1e-5);
+    fn zero_pose_points_straight_up() {
+        // the tool point 0.123 + 0.237 + 0.280 m above the base
+        assert!(close(ee_at([0.0; 4]), Vec3::new(0.042, 0.640, 0.0)), "{}", ee_at([0.0; 4]));
     }
 
     #[test]
-    fn base_yaw_swings_parallel_to_the_wall() {
-        let ee = ee_at([deg(90.0), 0.0, 0.0, 0.0]);
-        assert!((ee - Vec3::new(YAW_X, MOUNT_H, -(PITCH_OFF + REACH))).length() < 1e-5);
+    fn home_pose_holds_the_forearm_level() {
+        let ee = ee_at([0.0, 0.0, 90.0, 0.0]);
+        assert!(close(ee, Vec3::new(0.320, 0.358, 0.0)), "{ee}");
     }
 
     #[test]
-    fn elbow_and_wrist_bend_in_the_arm_plane() {
-        // Yawed 30°, elbow up 90°: the forearm stays in the vertical plane of the upper arm.
-        let ee = ee_at([deg(30.0), 0.0, deg(90.0), 0.0]);
-        let out = Vec3::new(deg(30.0).cos(), 0.0, -deg(30.0).sin());
-        let expected = Vec3::new(YAW_X, MOUNT_H, 0.0) + out * (PITCH_OFF + UPPER_L) + Vec3::Y * (FORE_L + WRIST_L);
-        assert!((ee - expected).length() < 1e-5);
+    fn positive_shoulder_leans_forward_and_elbow_bends_down() {
+        let home = ee_at([0.0, 0.0, 90.0, 0.0]);
+        let leaned = ee_at([0.0, 30.0, 90.0, 0.0]);
+        assert!(leaned.x > home.x + 0.05 && leaned.y < home.y - 0.1, "{leaned}");
+        let bent = ee_at([0.0, 0.0, 120.0, 0.0]);
+        assert!(bent.y < home.y - 0.1, "{bent}");
     }
 
     #[test]
-    fn box_on_the_table_is_reachable_claw_down() {
+    fn base_turns_counter_clockwise_about_the_vertical() {
+        let home = ee_at([0.0, 0.0, 90.0, 0.0]);
+        let ee = ee_at([90.0, 0.0, 90.0, 0.0]);
+        // seen from above (Y up, X forward), counter-clockwise takes +X towards −Z
+        assert!((ee.y - home.y).abs() < 1e-4 && ee.z < -0.3 && ee.x.abs() < 0.05, "{ee}");
+    }
+
+    #[test]
+    fn gripper_jaw_turns_about_its_own_axis_and_leaves_the_tool_point() {
+        let mut arm = Arm::new();
+        let closed = arm.frames().gripper;
+        arm.set_angles([0.0, 0.0, deg(90.0), deg(60.0)]);
+        let open = arm.frames().gripper;
+        assert!(close(closed.w_axis.truncate(), open.w_axis.truncate()));
+        assert!(close(closed.z_axis.truncate(), open.z_axis.truncate()));
+        assert!((closed.x_axis.truncate().dot(open.x_axis.truncate()) - 0.5).abs() < 1e-4);
+        assert_eq!(ee_at([0.0, 0.0, 90.0, 0.0]), ee_at([0.0, 0.0, 90.0, 60.0]));
+    }
+
+    #[test]
+    fn box_on_the_desk_is_reachable() {
         let target = crate::world::World::new().box_pose(Mat4::IDENTITY).transform_point3(Vec3::ZERO);
         let range = |j: usize| {
             let (lo, hi) = (JOINTS[j].min.to_degrees() as i32, JOINTS[j].max.to_degrees() as i32);
-            (lo..=hi).step_by(5).map(|d| deg(d as f32))
+            (lo..=hi).step_by(3).map(|d| d as f32)
         };
-        let mut arm = Arm::new();
         let mut best = f32::INFINITY;
         for q0 in range(0) {
             for q1 in range(1) {
                 for q2 in range(2) {
-                    for q3 in range(3) {
-                        arm.q = [q0, q1, q2, q3];
-                        let tool = arm.frames().tool;
-                        let down = -tool.y_axis.truncate().y; // claw pointing down = 1
-                        if down > 0.8 {
-                            best = best.min(tool.transform_point3(Vec3::ZERO).distance(target));
-                        }
-                    }
+                    best = best.min(ee_at([q0, q1, q2, 0.0]).distance(target));
                 }
             }
         }
-        // well inside the 4.5 cm grab distance even on a 5° grid
-        assert!(best < 0.025, "closest claw-down approach to the box: {best} m");
+        // well inside the 3 cm grab distance even on a 3° grid
+        assert!(best < 0.015, "closest approach to the box: {best} m");
     }
 
     #[test]
@@ -218,12 +258,35 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_stops_at_the_desk_and_can_still_lift_off() {
+        let mut arm = Arm::new();
+        arm.set_input(1, 1.0);
+        arm.set_input(2, 1.0);
+        for _ in 0..600 {
+            arm.step(0.016);
+            assert!(arm.end_effector().y > MIN_TOOL_HEIGHT - 0.005, "{}", arm.end_effector());
+        }
+        assert!(arm.end_effector().y < MIN_TOOL_HEIGHT + 0.01, "should have reached the desk");
+        arm.set_input(1, -1.0);
+        arm.set_input(2, 0.0);
+        let low = arm.end_effector().y;
+        for _ in 0..30 {
+            arm.step(0.016);
+        }
+        assert!(arm.end_effector().y > low + 0.02);
+    }
+
+    #[test]
     fn joints_stop_at_limits() {
         let mut arm = Arm::new();
+        arm.set_angles([0.0; NUM_JOINTS]); // straight up: leaning all the way forward clears the desk
         arm.set_input(1, 1.0);
         for _ in 0..1000 {
             arm.step(0.016);
         }
         assert_eq!(arm.angle(1), JOINTS[1].max);
+        arm.set_angles([0.0, deg(200.0), 0.0, f32::NAN]);
+        assert_eq!(arm.angle(1), JOINTS[1].max);
+        assert_eq!(arm.angle(3), 0.0);
     }
 }

@@ -81,11 +81,33 @@
           <button id="reset" title="Arm to its home pose, box back on the table">Reset</button>
           <button id="clear-trail">Clear trail</button>
         </div>
-        <label class="check"><input type="checkbox" id="drift" checked> Drift home when idle <small>(EMG: a joint left alone for 1.5 s eases back)</small></label>
+        <label class="check"><input type="checkbox" id="drift" checked> Drift home when idle <small>(EMG: once no joint has moved for 1.5 s, the arm eases back; never while the real arm follows)</small></label>
+      </section>
+
+      <section>
+        <h2>Real arm · RoArm-M2-S</h2>
+        <div class="row">
+          <button id="arm-connect">Connect arm</button>
+        </div>
+        <label class="check"><input type="checkbox" id="arm-follow" disabled autocomplete="off"> Follow the simulation <small>(off: the simulation shows the arm's pose · on: the arm is sent the simulation's, starting from where it is)</small></label>
+        <table id="arm-map">
+          <thead><tr><th>Joint</th><th>Simulated</th><th>Real</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="arm-status" class="hint">Not connected</div>
       </section>
 
       <section>
         <h2>OpenBCI Cyton</h2>
+        <label class="field">Link
+          <select id="link" title="How the Cyton reaches this computer">
+            <option value="serial" selected>USB dongle</option>
+            <option value="wifi">WiFi Shield</option>
+          </select>
+        </label>
+        <label class="field" id="shield-ip-field">Shield IP
+          <input type="text" id="shield-ip" value="192.168.4.1" spellcheck="false" autocomplete="off">
+        </label>
         <div class="row">
           <button id="connect" class="primary">Connect</button>
           <button id="simulate">Simulate</button>
@@ -119,6 +141,7 @@
           <button data-scheme="finger">Finger grid</button>
         </div>
         <p class="hint" id="scheme-hint"></p>
+        <p class="hint" id="saved-status"></p>
       </section>
 
       <section class="muscle-only">
