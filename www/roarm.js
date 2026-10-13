@@ -73,7 +73,7 @@ export class RoArm {
     const end = performance.now() + 8000; // opening the port can reboot the controller
     while (!this.live && performance.now() < end) await sleep(50);
     if (!this.live) throw new Error(this.servosDown ? SERVOS_DOWN : 'No feedback from the arm. Is it powered on, and was the right port picked?');
-    this.onStatus('Connected. The simulation shows the arm\'s pose; turn on Follow to drive it.');
+    this.onStatus('Connected. The simulation shows the arm\'s pose; press Engage to drive it.');
   }
 
   write(cmd) {
@@ -130,6 +130,16 @@ export class RoArm {
       this.target = [...this.real];
       this.sent = [...this.real];
     }
+  }
+
+  /** Emergency stop: stop following and send every joint to where it is now, so it stops there. */
+  halt() {
+    this.following = false;
+    if (!this.real) return;
+    this.real.forEach((deg, j) => {
+      const rad = (deg * Math.PI) / 180;
+      this.write({ T: 101, joint: j + 1, rad: ROARM_JOINTS[j].key === 'hand' ? HAND_ZERO - rad : rad, spd: SPEED, acc: ACCEL });
+    });
   }
 
   /** Call every frame with the simulated joint angles (°). */

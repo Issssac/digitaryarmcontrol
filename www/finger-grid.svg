@@ -109,7 +109,7 @@
 
   <!-- single row -->
   <rect x="756" y="110" width="540" height="150" rx="10" fill="#241f36" stroke="#3c3556"/>
-  <text x="772" y="134" font-size="13.5" font-weight="600" fill="#e3e6eb">A · Single row (10 pads) · Electrodes = “Single row · shared REF”</text>
+  <text x="772" y="134" font-size="13.5" font-weight="600" fill="#e3e6eb">A · Single row (10 pads)</text>
   <text x="772" y="153" font-size="11" fill="#8b919c">One pad per site → BOTTOM pin of its channel. REF on bone → bottom SRB. Top row empty.</text>
   <g font-size="10.5" fill="#c9cdd4" text-anchor="middle">
     <text x="784" y="178">BIAS</text><text x="814" y="178">SRB</text>

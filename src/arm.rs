@@ -12,7 +12,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
 pub const NUM_JOINTS: usize = 4;
 
@@ -162,6 +162,43 @@ impl Arm {
     pub fn end_effector(&self) -> Vec3 {
         self.frames().tool.transform_point3(Vec3::ZERO)
     }
+
+    /// The tool point and the way the gripper points, in the arm's vertical
+    /// plane: (outward from the base, up).
+    pub fn planar_tool(&self) -> (Vec2, Vec2) {
+        planar_at(self.q)
+    }
+
+    /// Shoulder and elbow rates (rad/s) that move the tool point at `v` (m/s,
+    /// in the vertical plane); None near a singularity (arm nearly straight).
+    pub fn planar_joint_rates(&self, v: Vec2) -> Option<(f32, f32)> {
+        const EPS: f32 = 1e-3;
+        let (p, _) = planar_at(self.q);
+        let column = |j: usize| {
+            let mut q = self.q;
+            q[j] += EPS;
+            (planar_at(q).0 - p) / EPS
+        };
+        let (a, b) = (column(1), column(2));
+        // |det| ≈ upper arm × forearm × sin(bend): ~0.066 m² at home; below this
+        // (within ~9° of straight) the rates blow up
+        let det = a.x * b.y - b.x * a.y;
+        if det.abs() < 0.01 {
+            return None;
+        }
+        Some(((v.x * b.y - b.x * v.y) / det, (a.x * v.y - v.x * a.y) / det))
+    }
+}
+
+/// See `Arm::planar_tool`. The forearm (and the gripper on it) points along
+/// link3's −Y, from the elbow to the tool point.
+fn planar_at(q: [f32; NUM_JOINTS]) -> (Vec2, Vec2) {
+    let f = Arm { q, vel: [0.0; NUM_JOINTS], input: [0.0; NUM_JOINTS] }.frames();
+    // the horizontal direction the arm faces (+X at base 0, counter-clockwise from above)
+    let out = Vec3::new(q[0].cos(), 0.0, -q[0].sin());
+    let p = f.tool.transform_point3(Vec3::ZERO);
+    let w = f.link3.transform_vector3(Vec3::NEG_Y);
+    (Vec2::new(p.dot(out), p.y), Vec2::new(w.dot(out), w.y).normalize_or_zero())
 }
 
 #[cfg(test)]
@@ -274,6 +311,25 @@ mod tests {
             arm.step(0.016);
         }
         assert!(arm.end_effector().y > low + 0.02);
+    }
+
+    #[test]
+    fn planar_pose_and_rates_agree_with_the_kinematics() {
+        let arm = Arm::new(); // home: forearm level, pointing straight out
+        let (p, d) = arm.planar_tool();
+        assert!((p - Vec2::new(0.320, 0.358)).length() < 1e-3, "{p}");
+        assert!((d - Vec2::X).length() < 1e-3, "{d}");
+        // the rates for "straight out at 0.1 m/s", applied briefly, move it that way
+        let (w1, w2) = arm.planar_joint_rates(Vec2::new(0.1, 0.0)).unwrap();
+        let mut q = arm.q;
+        q[1] += w1 * 0.01;
+        q[2] += w2 * 0.01;
+        let moved = planar_at(q).0 - p;
+        assert!((moved - Vec2::new(0.001, 0.0)).length() < 1e-4, "{moved}");
+        // arm straight up: singular
+        let mut up = Arm::new();
+        up.set_angles([0.0; NUM_JOINTS]);
+        assert!(up.planar_joint_rates(Vec2::X * 0.1).is_none());
     }
 
     #[test]

@@ -33,60 +33,91 @@ browser and a secure context; `localhost` counts).
 
 Tests (parser, filters, pipeline, kinematics): `cargo test`
 
-### WiFi Shield instead of the dongle
-
-Set **Link → WiFi Shield** and enter the shield's IP before clicking
-Connect. The page has to be served by `serve.py`, which bridges the shield: it
-proxies the shield's HTTP API (`/shield/api/...`, since the shield sends no CORS
-headers) and runs the TCP server on port **3000** that the shield streams raw
-packets to, relaying them to the page (`/shield/stream`).
-
-- In AP mode, join the shield's `OpenBCI-xxxx` network; the shield is at `192.168.4.1`.
-  On your own WiFi, use the IP your router gave it.
-- The shield switches the Cyton to 1000 Hz; Connect sets it back to 250 Hz (`~6`)
-  along with the usual channel settings.
-- **"nothing reached …:3000"**: allow Python through Windows Firewall on private
-  networks (inbound TCP 3000).
-
 ## Using it
 
-- **Manual**: Q/A base, W/S shoulder, E/D elbow, or drag the sliders.
-- **Gripper**: a button, not a joint you steer: **Open/Close** in the Joints panel, or
-  R open, F close, Space toggles, in any control mode. It moves to fully open (60°) or
-  closed by itself, and EMG and drift leave it alone. To pick up the box, open it,
-  bring the tool point to the box and close it; opening it again drops the box. The arm won't lower the tool point into the desk.
-  Drag the 3D view to orbit, scroll to zoom.
+- **Manual mode** (whenever EMG isn't connected): hold **+** or **−** under a joint in
+  the bottom-left panel to move it that way, or the keys A/D base, W/S shoulder,
+  F/R elbow, Q/E gripper (Q opens). Each column shows the joint's angle, and the real arm's
+  while it's engaged. Drag the 3D view to orbit, scroll to zoom.
+- **Gripper**: hold + to open it (up to 60°), − to close it, in any control mode;
+  it stops where you let go, and EMG and drift leave it alone. To pick up the box,
+  open it, bring the tool point to the box and close it; opening it again drops the
+  box. The arm won't lower the tool point into the desk.
+- **CONNECT EMG**: pick the Cyton dongle's COM port. The page resets the board,
+  configures all 8 channels for EMG (gain 24, bias on, SRB2 on for the single-row
+  cable), starts streaming and hands the arm joints to EMG. Disconnecting goes back
+  to manual mode. Below it, two charts show packets/s (dashed line: the expected
+  250) and dropped packets over the last 10 s; hover for a point's value.
 - **Simulate**: generates a fake Cyton byte stream (DC offsets, 60 Hz hum, noise)
-  that goes through the real parser and filters. Holding a joint key "contracts"
-  the channel mapped to it, so you can try calibration and mapping with no hardware.
-- **Connect**: over WiFi, talks to the shield at the given IP; over USB, pick the dongle's COM port. The page resets the board, configures all 8
-  channels for EMG (gain 24, bias on, SRB2 per the **Electrodes** setting) and starts streaming.
+  that goes through the real parser and filters. Under muscle pairs, holding a joint
+  key or button performs that axis's gesture (A/D base, W/S reach out/in, F/R elbow,
+  E grip), so you can try calibration with no hardware.
+- **Gain** (next to the joint buttons, muscle pairs only): how far a gesture
+  drives its axis.
+
+### Muscle pairs: gestures
+
+Seven gestures, each tensed as a light *intention* with the arm held still:
+
+| Gesture | Mostly | Drives |
+|---|---|---|
+| Wrist rotate in / out | pronator teres / supinator | **Base** + / − |
+| Tricep extend / bicep curl | triceps / biceps | **Reach** out / in |
+| Wrist back / wrist curl | wrist extensors / flexors | **Elbow** + / − (aims) |
+| Grip | finger flexors | **Gripper** closes; it opens when you let go |
+
+**Reach** moves the gripper tip in a straight line along the way the gripper
+points, by working the shoulder and elbow together (`src/reach.rs`). The line is
+taken when a reach starts and again whenever the base or elbow re-aim it, and the
+reach stops at a joint limit or when the arm is nearly straight. Under muscle pairs
+the shoulder only moves as part of a reach; the joint buttons still drive each
+joint directly in manual mode.
+
+Calibration learns each gesture's pattern across all 8 channels, so it doesn't
+matter which electrode is on which muscle: put the electrodes on the muscles in
+the guide, any channel each.
+
+The 8th electrode, on the **finger extensors** (back of the forearm, mid-way,
+little-finger side), has no gesture of its own. Grip and wrist curl both come from
+the flexors on the palm side, close together, so they're the likeliest pair to get
+mixed up; gripping also tenses the finger extensors to brace the wrist and a wrist
+curl doesn't, so this channel tells them apart. If the calibration results show a
+different pair mixed up instead, move it: for rotate out vs. wrist back or bicep
+curl, the brachioradialis (top of the forearm, thumb side, below the elbow) is the
+better spot. Recalibrate after moving it.
 
 ### First session with electrodes
 
 1. Plug in the dongle (switch on **GPIO6**), turn the Cyton on (**PC** position).
 2. Connect, then check that **Packets/s ≈ 250** and the channel bars sit near zero at rest.
-3. Click **Full calibration** (about a minute). A guide over the 3D view walks
-   through each step with a countdown, a progress bar, a live level meter and
-   audio cues: first relax completely (rest floor), then for each muscle **GET
-   READY → PULSE → RELAX**. A pulse is light *intention*: tense as if about to
-   make the movement, but keep the arm still. That level becomes full speed, so
-   later pulses drive the arm without real movement. The schedule runs on the
-   board's sample clock, so the cue and the recorded window always line up.
-   Each phase shows a live signal check, and that check decides when the phase
-   advances:
-   - **Rest:** counts only still seconds. All electrodes need contact, and a jump
-     on any channel reads as movement.
-   - **Pulse:** counts only seconds where the cued muscle is at least 2× its rest.
-   - **Relax:** waits until every channel is back near rest.
+3. Click **Calibrate + train** under Calibration (about 6 minutes plus however long
+   you take to get into position). It opens on the electrode guide; **Electrodes are
+   set up** continues. A guide over the 3D view then walks through each step. Every
+   step holds on **Press Space when you're ready** (or the Ready button), counts down
+   3-2-1, then records, with a progress bar at the bottom and audio cues:
+   - **Rest, three positions** (10 s each, with a profile drawing of each): forearm
+     limp on the table, forearm raised with the elbow on the table, arm held up
+     unsupported. Each raised position is learned as a pattern of its own, so
+     holding the arm up isn't read as a gesture.
+   - **Phase 1, round by round** (5 s each, with an animation of the movement):
+     every gesture hard, then every gesture about half as hard (this sets the
+     ceiling), then every gesture as faint as you can (tension only, arm still).
+     The pattern is re-learned from every round, so faint gestures still decode.
+   - **Phase 2, training:** one gesture at a time, a small meter over the arm, and
+     only that gesture's axis moves. Hold the line at the centre for a second.
+     Two hits in a row lower the level a step, a miss raises it, so it settles on
+     the lightest intention you can hold reliably.
 
-   The countdown pauses while the signal isn't clean, and only clean samples are
-   recorded. A dead electrode can be passed with **Skip this step**. At
-   the end each muscle gets a pulse-to-rest ratio; redo a weak one with its
-   **Pulse** button.
-4. Tune **Threshold** (dead-zone) and **Gain**. Pulsing the + muscle of a pair
-   moves the joint one way, the − muscle the other; co-contraction cancels.
-   Joints use hysteresis: they start at the threshold and stop at half of it.
+   The schedule runs on the board's sample clock, so the cue and the recorded window
+   always line up. Recording only counts clean seconds (still at rest, the right
+   gesture at the right strength), and **Skip** passes a step that won't work. At
+   the end each gesture gets its faint level, how often it was told apart from the
+   others, its training hits and its final level; **Redo** on its row recalibrates
+   one, **Train only** practises again. The channel cells then show the gesture each
+   channel responds to most. Space still stops the real arm during calibration.
+4. Tune **Gain**: the axis speed when a gesture is held at its level. Nothing moves
+   under EMG until a calibration has trained the gestures, and opposite gestures on
+   one axis cancel.
 
 ## Finger grid mode
 
@@ -189,10 +220,10 @@ the right finger ("isolated"), training hits, and the final faint level.
 **Redo** on a finger's row recalibrates just that finger. **Train only** practises
 again.
 
-**Drift home when idle** (Joints panel, on by default): under EMG control, once no
+**Drift ON / OFF** (button at the bottom of the panel, on by default): under EMG control, once no
 joint has had a command for 1.5 s, the arm eases back to the home pose at up to 6°/s.
 A joint you're holding still doesn't drift while you drive another one, and nothing
-drifts while the real arm is following.
+drifts while the real arm is engaged.
 
 ## Real arm (Waveshare RoArm-M2-S)
 
@@ -201,53 +232,49 @@ same JSON serial commands as
 [roarm-haptic-bridge](https://github.com/maxwellarmstrong/roarm-haptic-bridge)
 (`www/roarm.js`). Close that repo's dashboard first: only one program can hold the port.
 
-The two share joint angles 1:1, and the panel lists both side by side.
+The two share joint angles 1:1.
 
-1. **Real arm → Connect arm**, pick the RoArm's COM port (not the Cyton dongle).
+1. **CONNECT ARM** (under CONNECT EMG), pick the RoArm's COM port (not the Cyton dongle).
    The simulated arm jumps to the real arm's pose and keeps mirroring it: move the
    real arm by hand and the simulation follows. Keys and EMG don't move anything yet.
-2. Tick **Follow the simulation** to switch over. The simulation starts from the real
-   arm's pose, so nothing jumps, and from then on the real arm is sent the
-   simulation's pose (manual keys or EMG). Untick it to go back to mirroring.
+2. **ENGAGE** to switch over. The simulation starts from the real arm's pose, so
+   nothing jumps, and from then on the real arm is sent the simulation's pose
+   (manual or EMG). The joint panel shows the real angles under the simulated ones.
+   **DISENGAGE** goes back to mirroring.
+
+**E STOP** (bottom right of the 3D view while the arm is connected) or **Space**
+anywhere on the page stops the arm: every joint is sent its current position, and
+nothing more is sent until you press Engage again.
 
 Targets are clamped to the arm's limits (base ±180°, shoulder ±90°, elbow −20…169°,
-gripper −10…90°) and move at most 60°/s. Unticking Follow, disconnecting, or the
+gripper −10…90°) and move at most 60°/s. Disengaging, disconnecting, or the
 arm going silent for 1 s stops the commands, and the arm holds where it is.
 
 ## Saved calibration
 
-Both schemes' calibrations and the panel settings (mapping, threshold, gain, speed,
-finger → joint, bands, decoder, mains, drift) are saved to `calibration.json` next
-to `serve.py` whenever a calibration finishes or a setting changes, and loaded
-when the page opens. Delete the file to start over. It's per person and per
-electrode placement, so recalibrate after moving electrodes.
+Both schemes' calibrations and the panel settings (gain, speed, finger → joint,
+bands, drift) are saved to `calibration.json` next to `serve.py` whenever a
+calibration finishes or a setting changes, and loaded when the page opens. Delete
+the file to start over. It's per person and per electrode placement, so
+recalibrate after moving electrodes. A file saved by an older build (a different
+calibration format) is refused, and the page says so; it's replaced when the next
+calibration finishes.
 
-## Electrode placement (default mapping)
+## Electrode placement
 
 ![Electrode placement and Cyton wiring](www/electrodes.svg)
 
-The same diagram is in the app under **OpenBCI Cyton → Electrode guide**.
+The same diagram is in the app under **Calibration → Electrode guide**, and it's the
+first page of **Calibrate + train**.
 
 The Cyton's silkscreen labels both header rows N1P…N8P. The **bottom** row is each
-channel's negative input, the **top** row its positive input. Pick the matching
-**Electrodes** option in the app before clicking Connect:
+channel's negative input, the **top** row its positive input. The app always uses a
+single row with a shared REF (standard 10-lead cable): one electrode on each
+muscle belly in the guide → **bottom** pin of any channel (8 muscles, all 8
+channels; calibration learns which is which); **REF** on the elbow point (olecranon)
+→ **bottom SRB** pin; **BIAS** on the wrist bone (ulnar styloid) → **bottom BIAS**
+pin. Top row stays empty. The page turns SRB2 on (`x n 060110X`).
 
-- **Single row · shared REF** (default, standard 10-lead cable): one electrode on each
-  muscle belly → **bottom** pin of its channel; **REF** on the elbow point (olecranon)
-  → **bottom SRB** pin; **BIAS** on the wrist bone (ulnar styloid) → **bottom BIAS**
-  pin. Top row stays empty. The page turns SRB2 on (`x n 060110X`).
-- **Pairs · top + bottom** (if you have leads for both rows): two electrodes ~2 cm
-  apart along each muscle → top and bottom pin of the same channel; BIAS on bone;
-  SRB unconnected. SRB2 off (`x n 060100X`). Pairs reject crosstalk from
-  neighbouring muscles better.
-
-| Joint     | + channel                | − channel                    |
-|-----------|--------------------------|------------------------------|
-| Base      | CH1 pronator teres       | CH2 brachioradialis          |
-| Shoulder  | CH3 anterior deltoid     | CH4 posterior deltoid        |
-| Elbow     | CH5 biceps               | CH6 triceps                  |
-
-You can reassign any channel to any joint direction in the **Mapping** table.
 
 ## Signal chain (per channel, 250 Hz)
 
@@ -255,40 +282,39 @@ Raw µV → 4th-order Butterworth high-pass 20 Hz → **common-average reference
 (single-row mode: subtract the mean of the channels with contact, cancelling the
 hum and noise the shared REF puts on all of them) → wide notches (Q 5, each applied
 twice) at mains and its 2nd harmonic → full-wave rectify → 5 Hz low-pass (envelope)
-→ normalise between the rest floor and the pulse level (90th percentiles of
-each recording) → `input = hysteresis(a+ − a−, threshold) × gain` → joint velocity.
+→ the gesture decoder below → per gesture, a speed from its power (0 past the rest
+buffer, full at its level) × gain → axis velocity (reach turned into shoulder + elbow).
 
 Channels whose input is railed (electrode off) are shown as **off**, left out of
 the common average, and read as zero.
 
-### Decoder: pattern vs. per channel
+### Decoder: gestures across all channels (`src/emg/gesture.rs`)
 
-- **Pattern · all channels** (default once calibrated): each sample is explained
-  as a non-negative mix of the calibrated movement patterns (synergy
-  decomposition by NNLS).
-  - Channels are scaled by their resting noise, and offline electrodes are left
-    out of the fit.
-  - Each movement gets its own intensity (1 = the calibrated pulse), and
-    crosstalk is part of each pattern instead of reading as another movement.
-  - **Compound movements:** up to two movements drive their joints at once. The
-    weaker one only counts if it reaches 35% of the stronger; below that it's
-    treated as crosstalk.
-  - Opposite movements on one joint net out. A pattern split between, say,
-    wrist flexors and extensors gives a small net movement, not the wrong one.
-  - Each movement engages at the threshold and holds down to half of it.
-  - The **Mapping** table decides which movement drives which joint direction.
-  - The overlay over the 3D view shows the movements in play and their intensity.
-  - The calibration results list how often each movement was recognised on
-    held-out data, and which ones get mixed up.
-- **Per channel**: each joint follows its own pair of channels, as before.
+- Each channel's envelope is measured against the limp rest (in standard
+  deviations), the current arm position's baseline is taken out (a slow fit of
+  the raised-position patterns), and what's left is explained as a non-negative
+  mix of the calibrated gesture patterns (NNLS). Each gesture's weight is its
+  power: 0 at rest, 1 at the ceiling.
+- A gesture drives its axis once its power passes a buffer above its noise floor
+  for 0.1 s, and keeps driving until it drops back to the floor. Speed grows to
+  full at its level, which training tunes.
+- **Up to two gestures at once (compound movements).** The strongest gesture always
+  counts. The runner-up joins it once its power has stayed more than 2 standard
+  deviations above what the strongest one's crosstalk would put on it for 0.1 s,
+  and the pair holds until the weaker of the two drops under 1 standard deviation
+  (whichever is stronger by then). That coupling, a slope and the scatter around it
+  for every pair, is learned from each gesture's hard, half-strength and faint
+  recordings, smoothed the way the live decoder smooths, so a gesture that leaks
+  onto another's pattern isn't read as both. A third gesture never counts.
+  Opposite gestures on one axis cancel. The coupling comes from single gestures,
+  so a real compound that looks different from the sum of its parts can still be
+  missed.
+- Electrodes without contact are left out of the fit.
+- The overlay over the 3D view shows the gestures in play, how close each is to
+  full speed, and the arm position the decoder thinks you're in.
 
-**Offline electrodes:** once calibrated, a channel that loses contact is
-estimated from the working ones, and shown with a `~` and a dashed bar.
-1. The working channels give each movement's probability.
-2. The missing channel is then predicted from how it varied with the others,
-   within each movement, during calibration.
-
-Both decoders keep running on the estimate. Calibration never uses estimates.
+The finger grid (`src/emg/finger.rs`) is calibrated the same way and is where this
+approach came from.
 
 Why: on a single-row setup the 60 Hz hum came in at about 290 µV, identical on
 every channel. The board's clock puts it at about 59.9 Hz, where a narrow notch
@@ -311,7 +337,7 @@ from about 42 µV down to 2–4 µV.
   "System is Up"**: the Cyton's main firmware is missing or non-standard. Reflash
   the official Cyton firmware (v3.1.2) through the dongle. To enter the bootloader,
   hold PROG while switching the board OFF → PC; the blue LED blinks.
-- **Mains**: switch to 50 Hz outside North America.
+- **Mains**: the notches are fixed at 60 Hz (and 120 Hz), for North America.
 
 ## Layout
 
@@ -321,10 +347,12 @@ src/world.rs          desk and box: open/close the gripper on it to pick it up
 src/render/           WebGL2 renderer, meshes, orbit camera, arm → parts
 src/emg/cyton.rs      33-byte packet parser (resync, drop counting, µV scaling)
 src/emg/filter.rs     biquads
-src/emg/pipeline.rs   envelope, guided calibration, decoder / channel-pair → joint commands
-src/emg/decoder.rs    synergy (NNLS) decoder, offline-channel imputer, cross-validation report
+src/emg/pipeline.rs   signal chain: high-pass, common average, notches, envelope, contact
+src/reach.rs          muscle-pair axes → joints: reach along the gripper via shoulder + elbow
+src/emg/gesture.rs    muscle-pair gestures: rest postures, strong → half → faint rounds, training
+src/emg/decoder.rs    non-negative least squares shared by the gesture and finger decoders
 src/emg/finger.rs     finger grid: per-finger power, rest/faint/firmer bands, phase 1 + 2 coach
 src/lib.rs            wasm-bindgen API used by the page
-www/                  index.html, main.js (UI), serial.js (Web Serial), wifi.js (WiFi Shield),
+www/                  index.html, main.js (UI), serial.js (Web Serial), wifi.js (WiFi Shield, not in the UI),
                       roarm.js (real arm), simulator.js
 ```

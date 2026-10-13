@@ -18,14 +18,27 @@
       </div>
       <div id="error" hidden></div>
 
+      <!-- joint control: hold + or − to move; the angle above, and the real arm's while engaged -->
+      <div id="manual">
+        <div id="jgrid"></div>
+        <label class="muscle-only" id="gain-field" title="EMG gain: how far a contraction drives its joint">
+          <span>Gain</span>
+          <input type="range" id="gain" min="0.2" max="3" step="0.05" value="1">
+          <span id="gain-val" class="mono"></span>
+        </label>
+      </div>
+      <button id="estop" hidden title="Stop the arm where it is and stop sending it commands (Space)">E STOP</button>
+
       <!-- phase 2: a small meter over the arm instead of the full-screen coach -->
+      <!-- training: the gesture being trained, animated, at the top of the view (gestures only) -->
+      <img id="trainer-anim" alt="" hidden>
       <div id="trainer" hidden>
         <div class="t-top"><span id="trainer-what"></span><span id="trainer-trial" class="mono"></span></div>
         <div class="t-meter"><div class="t-fill"></div><div class="t-center"></div></div>
         <div class="t-hold"><div></div></div>
         <div class="t-bottom">
           <span id="trainer-hint"></span>
-          <span><button id="trainer-skip" class="small">Skip finger</button> <button id="trainer-stop" class="small">Stop · Esc</button></span>
+          <span><button id="trainer-skip" class="small">Skip</button> <button id="trainer-stop" class="small">Stop · Esc</button></span>
         </div>
       </div>
 
@@ -38,22 +51,26 @@
           <div id="coach-phase"></div>
           <div id="coach-title"></div>
           <div id="coach-detail"></div>
-          <div id="coach-count" class="mono"></div>
-          <div class="phase-bar"><div id="coach-bar"></div></div>
-          <div id="coach-check"><span class="dot"></span><span class="text"></span></div>
-          <div id="coach-live">
-            <span id="coach-live-label"></span>
-            <div class="bar"><div class="fill"></div><div class="floor"></div></div>
+          <!-- rest steps: how to hold the arm, in profile; gestures: the movement, animated -->
+          <img id="coach-pose" alt="" hidden>
+          <!-- each step holds here until the user is in position -->
+          <div id="coach-ready" hidden>
+            <div class="prompt">Press <kbd>Space</kbd> when you're ready</div>
+            <button id="coach-ready-btn" class="primary">Ready</button>
           </div>
+          <!-- only the 3-2-1 before recording; recording shows the bar instead -->
+          <div id="coach-count" class="mono"></div>
+          <div id="coach-check"><span class="dot"></span><span class="text"></span></div>
           <div id="fbar" hidden>
             <span id="fbar-label"></span>
             <div class="ftrack big"></div>
             <div id="fbar-legend"></div>
           </div>
           <button id="coach-skip" class="small" hidden>Skip this step</button>
-          <div id="coach-timeline"></div>
           <div id="coach-results" hidden></div>
           <button id="coach-close" class="primary" hidden>Done</button>
+          <div class="phase-bar"><div id="coach-bar"></div></div>
+          <div id="coach-timeline"></div>
         </div>
       </div>
     </div>
@@ -65,92 +82,48 @@
       </header>
 
       <section>
-        <h2>Control source</h2>
-        <div class="seg" id="source">
-          <button data-src="manual" class="active">Manual</button>
-          <button data-src="emg">EMG</button>
-        </div>
-        <p class="hint" id="source-hint">Keys Q/A · W/S · E/D · R/F, or drag the sliders (they spring back to 0).</p>
-      </section>
-
-      <section>
-        <h2>Joints</h2>
-        <div id="joints"></div>
-        <div class="kv mono" id="ee"></div>
         <div class="row">
-          <button id="reset" title="Arm to its home pose, box back on the table">Reset</button>
-          <button id="clear-trail">Clear trail</button>
-        </div>
-        <label class="check"><input type="checkbox" id="drift" checked> Drift home when idle <small>(EMG: once no joint has moved for 1.5 s, the arm eases back; never while the real arm follows)</small></label>
-      </section>
-
-      <section>
-        <h2>Real arm · RoArm-M2-S</h2>
-        <div class="row">
-          <button id="arm-connect">Connect arm</button>
-        </div>
-        <label class="check"><input type="checkbox" id="arm-follow" disabled autocomplete="off"> Follow the simulation <small>(off: the simulation shows the arm's pose · on: the arm is sent the simulation's, starting from where it is)</small></label>
-        <table id="arm-map">
-          <thead><tr><th>Joint</th><th>Simulated</th><th>Real</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <div id="arm-status" class="hint">Not connected</div>
-      </section>
-
-      <section>
-        <h2>OpenBCI Cyton</h2>
-        <label class="field">Link
-          <select id="link" title="How the Cyton reaches this computer">
-            <option value="serial" selected>USB dongle</option>
-            <option value="wifi">WiFi Shield</option>
-          </select>
-        </label>
-        <label class="field" id="shield-ip-field">Shield IP
-          <input type="text" id="shield-ip" value="192.168.4.1" spellcheck="false" autocomplete="off">
-        </label>
-        <div class="row">
-          <button id="connect" class="primary">Connect</button>
-          <button id="simulate">Simulate</button>
+          <button id="connect" class="primary wide">CONNECT EMG</button>
+          <button id="simulate" title="Fake a Cyton stream to try EMG control without hardware">Simulate</button>
         </div>
         <div class="row">
-          <button id="guide-open">Electrode guide</button>
+          <button id="arm-connect" title="Connect the RoArm-M2-S by USB">CONNECT ARM</button>
+          <button id="arm-engage" disabled title="Drive the real arm from the simulation, starting from where it is">ENGAGE</button>
         </div>
-        <div id="bci-status" class="hint">Not connected</div>
-        <div class="kv mono">
-          <span>Packets/s</span><span id="pps">0</span>
-          <span>Dropped</span><span id="drops">0</span>
-        </div>
-        <label class="field">Electrodes
-          <select id="wiring" title="Applied when you connect">
-            <option value="common" selected>Single row · shared REF</option>
-            <option value="bipolar">Pairs · top + bottom</option>
-          </select>
-        </label>
-        <label class="field">Mains
-          <select id="mains">
-            <option value="60" selected>60 Hz</option>
-            <option value="50">50 Hz</option>
-          </select>
-        </label>
+        <div id="arm-status" class="hint"></div>
+        <div id="emg-state">Manual Mode Engaged</div>
+        <p class="hint" id="source-hint"></p>
+        <div id="bci-status" class="hint"></div>
+        <!-- last 10 s of the stream: received and dropped, both in packets/s on one scale -->
+        <details class="spark" id="stream">
+          <summary class="spark-head" title="Show the last 10 s">
+            <span><i class="key pps"></i>Packets/s <span id="pps" class="mono">0</span></span>
+            <span><i class="key drops"></i>Dropped/s <span id="drops" class="mono">0</span></span>
+          </summary>
+          <canvas id="stream-chart" aria-label="Packets received and dropped per second over the last 10 seconds"></canvas>
+          <div class="spark-foot"><span id="stream-when">last 10 s</span><span id="drops-total" class="mono"></span></div>
+        </details>
       </section>
 
       <section>
         <h2>Control scheme</h2>
-        <div class="seg" id="scheme">
-          <button data-scheme="muscle" class="active">Muscle pairs</button>
-          <button data-scheme="finger">Finger grid</button>
-        </div>
-        <p class="hint" id="scheme-hint"></p>
+        <select id="scheme" class="full">
+          <option value="muscle" selected>Muscle pairs</option>
+          <option value="finger">Finger grid</option>
+        </select>
+        <!-- only when saving or loading the calibration fails -->
         <p class="hint" id="saved-status"></p>
       </section>
 
       <section class="muscle-only">
         <h2>Calibration</h2>
         <div class="row">
-          <button id="cal-all">Full calibration</button>
-          <button id="cal-rest">Rest only</button>
+          <button id="gcal" class="primary" title="Rest in three positions, each gesture strong → half → faint, then training (about 6 minutes)">Calibrate + train</button>
+          <button id="gtrain" title="Practise every gesture again: the level steps down as you get consistent">Train only</button>
+          <button class="guide-open">Electrode guide</button>
         </div>
-        <div id="cal-status" class="hint">Uncalibrated, using default levels. Full calibration takes about a minute and guides you through each movement.</div>
+        <div class="cal-pill"><span id="cal-pill" class="pill warn">Uncalibrated</span></div>
+        <div id="cal-status" class="hint"></div>
       </section>
 
       <section class="finger-only">
@@ -158,7 +131,9 @@
         <div class="row">
           <button id="fcal" class="primary">Calibrate + train</button>
           <button id="ftrain">Train only</button>
+          <button class="guide-open">Electrode guide</button>
         </div>
+        <div class="cal-pill"><span id="fcal-pill" class="pill warn">Uncalibrated</span></div>
         <div id="fcal-status" class="hint"></div>
         <div id="fposture" class="kv mono"></div>
         <label class="check"><input type="checkbox" id="fsimple" checked autocomplete="off"> Simple bands <small>rest under ¼ · − from ¼ to ½ · + over ½, no ceiling</small></label>
@@ -171,24 +146,12 @@
         <div id="channels"></div>
       </section>
 
-      <section class="muscle-only">
-        <h2>Decoder</h2>
-        <div class="seg" id="decoder">
-          <button data-mode="pattern" class="active">Pattern · all channels</button>
-          <button data-mode="direct">Per channel</button>
+      <section>
+        <div class="row">
+          <button id="drift" class="active" aria-pressed="true" title="Under EMG, once no joint has moved for 1.5 s the arm eases back home (never while the real arm is engaged)">Drift ON</button>
+          <button id="reset" title="Arm to its home pose, box back on the table">Reset</button>
+          <button id="clear-trail">Clear trail</button>
         </div>
-        <p class="hint" id="decoder-hint"></p>
-      </section>
-
-      <section class="muscle-only">
-        <h2>Mapping</h2>
-        <p class="hint">Which movement (electrode site) drives each joint direction.</p>
-        <table id="mapping">
-          <thead><tr><th>Joint</th><th>+ direction</th><th>− direction</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <label class="field">Threshold <input type="range" id="threshold" min="0" max="0.6" step="0.01" value="0.12"><span id="threshold-val" class="mono"></span></label>
-        <label class="field">Gain <input type="range" id="gain" min="0.2" max="3" step="0.05" value="1"><span id="gain-val" class="mono"></span></label>
       </section>
     </aside>
   </main>
@@ -196,7 +159,12 @@
   <div id="guide" hidden>
     <figure>
       <img id="guide-img" src="electrodes.svg" alt="Electrode placement on the arm and wiring to the Cyton pin header">
-      <figcaption>Click anywhere or press Esc to close</figcaption>
+      <figcaption id="guide-caption">Click anywhere or press Esc to close</figcaption>
+      <!-- shown when the guide opens as the first page of a calibration -->
+      <div id="guide-gate" hidden>
+        <button id="guide-cancel">Cancel</button>
+        <button id="guide-ready" class="primary">Electrodes are set up</button>
+      </div>
     </figure>
   </div>
   <script type="module" src="main.js"></script>

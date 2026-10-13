@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" width="320" height="220">
+  <!-- Rest posture 2: elbow on the table, forearm raised, hand limp -->
+  <g fill="#2b2f38" stroke="#4a505c" stroke-width="2" stroke-linejoin="round">
+    <rect x="48" y="98" width="9" height="94" rx="3"/>
+    <rect x="50" y="191" width="6" height="27" rx="1.5"/>
+    <rect x="130" y="191" width="6" height="27" rx="1.5"/>
+    <rect x="46" y="184" width="96" height="8" rx="3"/>
+  </g>
+  <g fill="#3a3f4a" stroke="#8b919c" stroke-width="2" stroke-linejoin="round">
+    <path d="M156 172 L158 222 L176 222 L177 170 Z"/>
+    <path d="M87 66 C78 68 70 74 68 86 L66 150 C66 168 69 178 74 182 L104 182 C106 165 106 152 106 142 C108 126 114 114 114 100 C114 82 109 70 101 66 Z"/>
+    <path d="M72 158 L164 158 C174 158 178 164 178 171 C178 178 173 184 164 184 L72 184 C65 184 65 158 72 158 Z"/>
+    <path d="M87 50 L88 72 L101 72 L101 52 Z" stroke="none"/>
+    <path d="M87 50 L88 67 M101 52 L100.5 67" fill="none"/>
+    <path d="M78 38 C78 26 88 19 98 20 C108 21 114 29 113 38 L117 46 L112 48 L112 52 C112 58 107 61 101 60 C95 60 90 58 86 56 C80 53 78 46 78 38 Z"/>
+    <ellipse cx="90" cy="42" rx="3" ry="4.5" fill="none" stroke-width="1.5"/>
+    <circle cx="105" cy="35" r="1.6" fill="#8b919c" stroke="none"/>
+  </g>
+  <g fill="#2b2f38" stroke="#4a505c" stroke-width="2" stroke-linejoin="round">
+    <rect x="290" y="149" width="10" height="69" rx="1.5"/>
+    <rect x="106" y="140" width="208" height="9" rx="2"/>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- upper arm first, then forearm + hand on top so the fold at the elbow stays readable -->
+    <path d="M92 82 L114 130" stroke="#33d9ff" stroke-width="21"/>
+    <path d="M92 82 L114 130" stroke="#265a6a" stroke-width="17"/>
+    <g stroke="#33d9ff">
+      <path d="M114 130 L126 88" stroke-width="17"/>
+      <path d="M126 88 Q135 83 138 92" stroke-width="15"/>
+      <path d="M138 92 Q140 99 139 106" stroke-width="11"/>
+    </g>
+    <!-- #33d9ff at ~30% over the #20232a card -->
+    <g stroke="#265a6a">
+      <path d="M114 130 L126 88" stroke-width="13"/>
+      <path d="M126 88 Q135 83 138 92" stroke-width="11"/>
+      <path d="M138 92 Q140 99 139 106" stroke-width="7"/>
+    </g>
+  </g>
+  <g fill="#f2851f">
+    <circle cx="101.9" cy="103.6" r="2.6"/>
+    <circle cx="117.6" cy="117.4" r="2.6"/>
+    <circle cx="120.6" cy="106.9" r="2.6"/>
+  </g>
+</svg>
