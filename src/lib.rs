@@ -51,7 +51,8 @@ fn band_code(b: Band) -> u8 {
 /// refused instead of misread. 2: muscle pairs became gestures, not channels.
 /// 3: gestures calibrate like the fingers (rest postures, rounds, training).
 /// 4: gestures keep their hard-round samples (for the compound coupling).
-const CALIBRATION_VERSION: u32 = 4;
+/// 5: gestures have no faint round.
+const CALIBRATION_VERSION: u32 = 5;
 
 /// Both schemes' calibrations, as saved by `export_calibration`.
 #[derive(Serialize, Deserialize)]
@@ -83,6 +84,8 @@ pub struct App {
     gripper_target: f32,
     /// The joints were set from outside (the real arm) for this frame: no inputs, no drift.
     tracked: bool,
+    /// The real arm's pose (radians) to draw solid this frame, with the simulation as a ghost.
+    real: Option<[f32; NUM_JOINTS]>,
     trail: Vec<Vec3>,
     /// Muscle pairs: turns the reach axis into shoulder + elbow motion.
     reach: Reach,
@@ -113,6 +116,7 @@ impl App {
             drift: true,
             idle: 0.0,
             tracked: false,
+            real: None,
             gripper_target: GRIPPER_CLOSED,
             trail: Vec::new(),
             reach: Reach::default(),
@@ -151,7 +155,12 @@ impl App {
             self.trail.push(ee);
         }
 
-        self.renderer.render(&self.camera, &self.arm, &self.world, &self.trail);
+        let real = std::mem::take(&mut self.real).map(|q| {
+            let mut arm = Arm::new();
+            arm.set_angles(q);
+            arm
+        });
+        self.renderer.render(&self.camera, &self.arm, real.as_ref(), &self.world, &self.trail);
     }
 
     /// Integrate this frame's joint commands (manual or EMG, plus idle drift).
@@ -215,6 +224,15 @@ impl App {
             self.tracked = true;
             // the button carries on from wherever the real gripper is
             self.gripper_target = self.arm.angle(GRIPPER);
+        }
+    }
+
+    /// Draws the arm solid at these angles (degrees) for the next frame, the
+    /// real arm's pose, with the simulation's own pose as a ghost: where it is
+    /// sending the real arm. The simulation itself carries on as usual.
+    pub fn show_real(&mut self, degrees: &[f32]) {
+        if let Ok(q) = <[f32; NUM_JOINTS]>::try_from(degrees) {
+            self.real = Some(q.map(f32::to_radians));
         }
     }
 
@@ -610,7 +628,6 @@ impl App {
             S::Rest(p) => (0, -1, p as i32),
             S::Hard(g) => (1, g as i32, -1),
             S::Medium(g) => (2, g as i32, -1),
-            S::Faint(g) => (3, g as i32, -1),
             S::Train(g) => (4, g as i32, -1),
         };
         let phase = match s.phase {
@@ -627,7 +644,6 @@ impl App {
             Some(C::TooStrong) => (4, -1),
             Some(C::OtherGesture(h)) => (5, h as i32),
             Some(C::NotRelaxed(c)) => (6, c as i32),
-            Some(C::Fainter) => (7, -1),
         };
         let meter = match s.meter_kind {
             M::Activity => 0,
@@ -683,7 +699,7 @@ impl App {
             .collect()
     }
 
-    /// Per gesture: [calibrated, faint level, isolation, hits, trials, level, stasis, mixed].
+    /// Per gesture: [calibrated, isolation, hits, trials, level, stasis].
     pub fn gesture_report(&self) -> Vec<f32> {
         self.gestures
             .report()
@@ -691,13 +707,11 @@ impl App {
             .flat_map(|r| {
                 [
                     f32::from(u8::from(r.calibrated)),
-                    r.faint as f32,
                     r.isolation as f32,
                     r.hits as f32,
                     r.trials as f32,
                     r.level as f32,
                     r.stasis as f32,
-                    f32::from(u8::from(r.mixed)),
                 ]
             })
             .collect()

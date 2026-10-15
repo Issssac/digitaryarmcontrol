@@ -267,7 +267,7 @@ body.fingers .chan button { visibility: hidden; }
 #coach .card.firm { --phase: #4fd18b; }
 #coach .card.real { --phase: var(--orange); }
 #coach-results .res.fres { grid-template-columns: 1fr 58px 58px 70px 70px 64px; }
-#coach-results .res.gres { grid-template-columns: 1fr 52px 64px 74px 52px 46px; }
+#coach-results .res.gres { grid-template-columns: 1fr 64px 74px 52px 46px; }
 
 /* phase 2 trainer: small meter over the 3D view. Centre line = the target;
    the fill grows red to the right when over it, green to the left when under. */

@@ -22,11 +22,11 @@
 //!   pattern of its own, a slow fit says which posture the arm is in, and that
 //!   posture's baseline is taken out before the gestures are fitted.
 //! - Phase 1 learns each gesture from a hard contraction, then about half as
-//!   hard (which sets the ceiling), then a faint intention, re-learning the
-//!   pattern from every round so faint gestures still decode.
+//!   hard (which sets the ceiling), re-learning the pattern from both rounds.
 //! - Phase 2 has the user hold each gesture at its level, with only that
-//!   gesture's axis moving. Two hits in a row lower the level a step and a miss
-//!   raises it, so it settles on the lightest intention they can hold reliably.
+//!   gesture's axis moving. The level starts at LEVEL_MAX; two hits in a row
+//!   lower it a step and a miss raises it, so it settles on the lightest
+//!   intention they can hold reliably.
 
 use serde::{Deserialize, Serialize};
 
@@ -59,9 +59,6 @@ const STASIS_MARGIN: f64 = 0.02;
 const STASIS_MIN: f64 = 0.04;
 /// The ceiling sits at this percentile of the half-strength contraction.
 const CEILING_PERCENTILE: f64 = 0.2;
-/// Faint round: the box runs from just above noise (FAINT_MIN × stasis) up to FAINT_TOP.
-const FAINT_MIN: f64 = 1.3;
-const FAINT_TOP: f64 = 0.3;
 /// The level (power for full speed): at most this, at least this multiple of stasis.
 const LEVEL_MAX: f64 = 0.6;
 const LEVEL_MIN_ROOM: f64 = 2.2;
@@ -171,8 +168,6 @@ pub enum Step {
     Hard(usize),
     /// About half as hard: sets the ceiling.
     Medium(usize),
-    /// A faint intention: tension only.
-    Faint(usize),
     /// Training: hold this gesture at its level.
     Train(usize),
 }
@@ -181,7 +176,7 @@ impl Step {
     pub fn gesture(self) -> Option<usize> {
         match self {
             Step::Rest(_) => None,
-            Step::Hard(g) | Step::Medium(g) | Step::Faint(g) | Step::Train(g) => Some(g),
+            Step::Hard(g) | Step::Medium(g) | Step::Train(g) => Some(g),
         }
     }
 }
@@ -204,8 +199,6 @@ pub enum Check {
     Moving(usize),
     /// Not enough tension for this step.
     TooWeak,
-    /// Faint round: above the top of the box.
-    Fainter,
     /// Training: above the trial's band; half-strength: as hard as the hard one.
     TooStrong,
     /// Another gesture's pattern is stronger than the cued one.
@@ -267,17 +260,13 @@ pub struct Status {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GestureReport {
     pub calibrated: bool,
-    /// Level of the faint round, as a fraction of the ceiling.
-    pub faint: f64,
-    /// Share of the faint round in which this gesture came out on top and above stasis.
+    /// Share of the half-strength round in which this gesture came out on top and above stasis.
     pub isolation: f64,
     pub hits: u32,
     pub trials: u32,
     /// Current level (full speed) and noise floor.
     pub level: f64,
     pub stasis: f64,
-    /// The faint round looked more like another gesture, so it wasn't used.
-    pub mixed: bool,
 }
 
 /// Per-gesture calibration recordings.
@@ -288,11 +277,8 @@ struct GestureData {
     hard_rec: Vec<Features>,
     /// z samples of the half-strength contraction (they define the ceiling).
     medium: Vec<Features>,
-    /// Unit patterns from the half-strength and faint rounds.
+    /// Unit patterns from the half-strength round.
     shapes: Vec<Features>,
-    /// z samples of the faint round (for the level and isolation).
-    faint: Vec<Features>,
-    mixed: bool,
 }
 
 /// The limp rest recording: the reference every z-score is measured from.
@@ -489,7 +475,6 @@ impl GestureControl {
             calibrated: self.templates[g].is_some(),
             level: self.bands(g).level,
             stasis: self.stasis[g],
-            mixed: self.data[g].mixed,
             ..self.report[g]
         })
     }
@@ -641,7 +626,7 @@ impl GestureControl {
     /// contraction can't be mistaken for the arm being raised.
     fn posture_frozen(&self) -> bool {
         self.run.as_ref().is_some_and(|r| {
-            r.phase == Phase::Record && matches!(r.step, Step::Hard(_) | Step::Medium(_) | Step::Faint(_))
+            r.phase == Phase::Record && matches!(r.step, Step::Hard(_) | Step::Medium(_))
         })
     }
 
@@ -749,7 +734,7 @@ impl GestureControl {
 
     /// How much each gesture reads when only another one is made: for each
     /// ordered pair (a, b), b's power against a's over all of a's recordings
-    /// (hard, half-strength, faint), as a slope through the origin and the
+    /// (hard, half-strength), as a slope through the origin and the
     /// scatter around it. The powers are smoothed the way the live decoder
     /// smooths them, so the scatter is the one the compound test really sees.
     fn update_coupling(&mut self) {
@@ -772,7 +757,7 @@ impl GestureControl {
         for a in (0..NUM_GESTURES).filter(|&a| self.templates[a].is_some()) {
             let d = &self.data[a];
             let fits: Vec<[f64; NUM_GESTURES]> =
-                [&d.hard_rec, &d.medium, &d.faint].into_iter().flat_map(|rec| smoothed(rec)).collect();
+                [&d.hard_rec, &d.medium].into_iter().flat_map(|rec| smoothed(rec)).collect();
             let saa: f64 = fits.iter().map(|w| w[a] * w[a]).sum();
             if fits.len() < 2 || saa < 1e-9 {
                 continue;
@@ -894,8 +879,7 @@ impl GestureControl {
     }
 
     /// Skip the current step. A raised posture: left out. Hard or half-strength:
-    /// drops that gesture from the rest of the calibration. Faint: that gesture
-    /// keeps what it learned from the half-strength round. Training: on to the
+    /// drops that gesture from the rest of the calibration. Training: on to the
     /// next gesture. The limp rest can't be skipped, since everything is
     /// measured against it.
     pub fn skip(&mut self) {
@@ -908,13 +892,12 @@ impl GestureControl {
             }
             (Step::Rest(p), _) => Self::after_rest(&run, p),
             // already recorded: just skip the relax
-            (Step::Hard(_) | Step::Medium(_) | Step::Faint(_), Phase::Relax) => run.next.take(),
+            (Step::Hard(_) | Step::Medium(_), Phase::Relax) => run.next.take(),
             (Step::Hard(g) | Step::Medium(g), _) => {
                 self.data[g] = GestureData::default();
                 self.templates[g] = None;
                 self.next_calibration_step(&mut run, step)
             }
-            (Step::Faint(_), _) => self.next_calibration_step(&mut run, step),
             (Step::Train(g), _) => Self::after_training(&run, g),
         };
         if self.enter(&mut run, next) {
@@ -927,7 +910,7 @@ impl GestureControl {
             (Step::Train(_), Phase::Prepare) => samples(CUE_S),
             (_, Phase::Prepare) => samples(COUNTDOWN_S),
             (Step::Rest(_), Phase::Record) => samples(REST_S),
-            (Step::Hard(_) | Step::Medium(_) | Step::Faint(_), Phase::Record) => samples(GESTURE_S),
+            (Step::Hard(_) | Step::Medium(_), Phase::Record) => samples(GESTURE_S),
             (Step::Train(_), Phase::Record) => samples(TRIAL_TIMEOUT_S),
             (Step::Train(_), Phase::Relax) => samples(TRAIN_RELAX_S),
             (_, Phase::Relax) => samples(RELAX_S),
@@ -971,12 +954,6 @@ impl GestureControl {
             .unwrap_or((0, 0.0))
     }
 
-    /// Box for the faint round: from just above noise up to FAINT_TOP.
-    fn faint_box(&self, g: usize) -> (f64, f64) {
-        let lo = FAINT_MIN * self.stasis[g];
-        (lo, FAINT_TOP.max(lo * 1.6).min(1.0))
-    }
-
     /// Meter kind, value, target range and aim for the coach.
     fn meter(&self, run: &Run) -> (Meter, f64, (f64, f64), f64) {
         let none = (f64::NAN, f64::NAN);
@@ -987,7 +964,6 @@ impl GestureControl {
                 (Meter::Activity, a, (1.0, f64::INFINITY), f64::NAN)
             }
             (Step::Medium(g), Phase::Record) => (Meter::OfHard, self.of_hard(g), MEDIUM_TARGET, f64::NAN),
-            (Step::Faint(g), Phase::Record) => (Meter::Power, self.power[g], self.faint_box(g), f64::NAN),
             (Step::Train(g), Phase::Relax) => (Meter::Power, self.power[g], none, f64::NAN),
             (Step::Train(g), _) => (Meter::Power, self.power[g], self.trial_band(g), self.bands(g).level),
             _ => (Meter::Stillness, self.stillness_z().1, none, f64::NAN),
@@ -1021,19 +997,6 @@ impl GestureControl {
                     Check::TooWeak
                 } else if h > MEDIUM_MAX {
                     Check::TooStrong
-                } else {
-                    Check::Clean
-                }
-            }
-            (Step::Faint(g), Phase::Record) => {
-                let p = self.power[g];
-                let (lo, hi) = self.faint_box(g);
-                if let Some(other) = self.stronger_gesture(g) {
-                    Check::OtherGesture(other)
-                } else if p > hi {
-                    Check::Fainter
-                } else if p < lo {
-                    Check::TooWeak
                 } else {
                     Check::Clean
                 }
@@ -1239,19 +1202,8 @@ impl GestureControl {
                 d.medium = rec;
                 self.rebuild_template(g);
                 if self.templates[g].is_none() {
-                    self.data[g] = GestureData::default(); // no usable pattern: out of the faint round
+                    self.data[g] = GestureData::default(); // no usable pattern
                 }
-            }
-            Step::Faint(g) => {
-                // only refine this gesture with the round if it really looks like this gesture
-                let shape = direction(&mean(&rec), &seen).filter(|s| self.closest_gesture(s, &seen) == Some(g));
-                let d = &mut self.data[g];
-                match shape {
-                    Some(s) => d.shapes.push(s),
-                    None => d.mixed = true,
-                }
-                d.faint = rec;
-                self.rebuild_template(g);
             }
             Step::Rest(_) | Step::Train(_) => return None,
         }
@@ -1259,35 +1211,22 @@ impl GestureControl {
         self.next_calibration_step(run, step)
     }
 
-    /// The gesture whose pattern points most the same way as `shape`.
-    fn closest_gesture(&self, shape: &Features, seen: &[bool; NUM_CHANNELS]) -> Option<usize> {
-        (0..NUM_GESTURES)
-            .filter_map(|g| {
-                let t = self.templates[g].as_ref()?;
-                Some((g, dot(shape, t, seen) / dot(t, t, seen).sqrt().max(1e-9)))
-            })
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(g, _)| g)
-    }
-
     /// Phase 1 runs round by round: every gesture hard, then every gesture at
-    /// half strength, then every gesture faint. The step after `after` in that
+    /// half strength. The step after `after` in that
     /// order, or the end of phase 1 (then training, if asked for).
     fn next_calibration_step(&mut self, run: &mut Run, after: Step) -> Option<Step> {
         let pos = |g: usize| run.calibrate.iter().position(|&h| h == g).map_or(0, |p| p + 1);
         let (mut round, mut i) = match after {
             Step::Hard(g) => (0, pos(g)),
             Step::Medium(g) => (1, pos(g)),
-            Step::Faint(g) => (2, pos(g)),
             Step::Rest(_) | Step::Train(_) => (0, 0),
         };
-        while round < 3 {
+        while round < 2 {
             while let Some(&g) = run.calibrate.get(i) {
                 let d = &self.data[g];
                 let step = match round {
                     0 => Some(Step::Hard(g)),
-                    1 => d.hard.is_some().then_some(Step::Medium(g)),
-                    _ => (self.templates[g].is_some() && !d.medium.is_empty()).then_some(Step::Faint(g)),
+                    _ => d.hard.is_some().then_some(Step::Medium(g)),
                 };
                 if step.is_some() {
                     return step;
@@ -1305,8 +1244,7 @@ impl GestureControl {
         run.train.first().map(|&g| Step::Train(g))
     }
 
-    /// The gesture's pattern is the average of its unit patterns from every
-    /// round, scaled so that the softest part of the half-strength one reads 1.
+    /// The gesture's pattern is the average of its unit patterns, scaled so that the softest part of the half-strength one reads 1.
     fn rebuild_template(&mut self, g: usize) {
         let seen = self.seen();
         let d = &self.data[g];
@@ -1356,8 +1294,9 @@ impl GestureControl {
         run.train.get(pos + 1).map(|&h| Step::Train(h))
     }
 
-    /// End of phase 1: each calibrated gesture's faint level (its starting
-    /// level) and isolation, measured with all the templates competing.
+    /// End of phase 1: each calibrated gesture starts training at LEVEL_MAX,
+    /// and its isolation is measured on the half-strength round with all the
+    /// templates competing.
     fn finalize(&mut self, gestures: &[usize]) {
         self.update_stasis();
         self.update_coupling();
@@ -1366,15 +1305,14 @@ impl GestureControl {
             if self.templates[g].is_none() {
                 continue;
             }
-            let fits: Vec<[f64; NUM_GESTURES]> = self.data[g].faint.iter().map(|z| Self::fit(&self.templates, z, &seen)).collect();
-            let faint = if fits.is_empty() { LEVEL_MAX } else { percentile(fits.iter().map(|w| w[g]).collect(), 0.5) };
+            let fits: Vec<[f64; NUM_GESTURES]> = self.data[g].medium.iter().map(|z| Self::fit(&self.templates, z, &seen)).collect();
             let on_top = fits
                 .iter()
                 .filter(|w| w[g] > self.stasis[g] && (0..NUM_GESTURES).all(|h| w[h] <= w[g]))
                 .count();
             let (lo, hi) = self.level_limits(g);
-            self.level[g] = faint.clamp(lo, hi);
-            self.report[g] = GestureReport { faint, isolation: on_top as f64 / fits.len().max(1) as f64, ..Default::default() };
+            self.level[g] = LEVEL_MAX.clamp(lo, hi);
+            self.report[g] = GestureReport { isolation: on_top as f64 / fits.len().max(1) as f64, ..Default::default() };
         }
     }
 
@@ -1411,13 +1349,12 @@ impl GestureControl {
         let (meter_kind, meter, target, aim) = self.meter(run);
         // segments: each rest posture, each calibration round, each gesture's training
         let rest = run.rests;
-        let rounds_total = if run.calibrate.is_empty() { 0 } else { 3 };
+        let rounds_total = if run.calibrate.is_empty() { 0 } else { 2 };
         let trains = if run.train_after { run.calibrate.len() } else { run.train.len() };
         let segment = match run.step {
             Step::Rest(p) => p,
             Step::Hard(_) => rest,
             Step::Medium(_) => rest + 1,
-            Step::Faint(_) => rest + 2,
             Step::Train(g) => rest + rounds_total + run.train.iter().position(|&h| h == g).unwrap_or(0),
         };
         let (round, rounds) = match run.step {
@@ -1634,16 +1571,13 @@ mod tests {
     }
 
     #[test]
-    fn training_raises_the_level_for_a_user_who_cant_go_that_light() {
-        let (untrained, _) = calibrated(User::new(15), false);
+    fn training_keeps_the_level_where_a_user_who_cant_go_that_light_can_hold_it() {
         let mut u = User::new(15);
         u.floor = 0.5; // never holds below half the ceiling
         let (gc, _) = calibrated(u, true);
         for (g, r) in gc.report().iter().enumerate() {
-            let before = untrained.report()[g].level;
-            // it rises until what they hold fits the trial band (within a step)
-            assert!(r.level > before, "gesture {g}: level {before} → {}", r.level);
-            assert!(TRIAL_HI * r.level >= 0.5 * LEVEL_DOWN, "gesture {g}: level {} still too low", r.level);
+            // it doesn't step below what they can hold (within a step)
+            assert!(TRIAL_HI * r.level >= 0.5 * LEVEL_DOWN, "gesture {g}: level {} too low", r.level);
         }
     }
 

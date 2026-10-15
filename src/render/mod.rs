@@ -1,6 +1,7 @@
 //! WebGL2 renderer: one Blinn-Phong program, unit meshes scaled per part (or
 //! the arm's own link meshes), planar projected shadows on the desk, a grid and
-//! an end-effector trail.
+//! an end-effector trail. While the real arm follows the simulation, the real
+//! arm is drawn solid and the simulation's pose as a translucent ghost.
 
 pub mod camera;
 pub mod mesh;
@@ -10,7 +11,7 @@ use glam::{Mat3, Mat4, Quat, Vec3};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlProgram, WebGlShader, WebGlUniformLocation};
 
-use crate::arm::Arm;
+use crate::arm::{Arm, NUM_JOINTS};
 use crate::world::World;
 use camera::OrbitCamera;
 use mesh::GpuMesh;
@@ -21,6 +22,10 @@ const GROUND: Color = [0.16, 0.17, 0.19, 1.0];
 const GRID: Color = [0.24, 0.26, 0.30, 1.0];
 const SHADOW: Color = [0.0, 0.0, 0.0, 0.35];
 const TRAIL: Color = [0.20, 0.85, 1.00, 1.0];
+/// The simulation's pose, drawn over the real arm.
+const GHOST: Color = [0.45, 0.85, 1.00, 0.28];
+/// The ghost only shows once a joint is this far (radians, ~0.5°) from the real arm.
+const GHOST_MIN_GAP: f32 = 0.009;
 /// Direction *towards* the light: high, in front and to one side.
 const LIGHT_DIR: Vec3 = Vec3::new(0.5, 1.0, 0.4);
 
@@ -145,7 +150,11 @@ impl Renderer {
         self.canvas.set_height(height.max(1));
     }
 
-    pub fn render(&mut self, cam: &OrbitCamera, arm: &Arm, world: &World, trail: &[Vec3]) {
+    /// `sim`: the simulated arm. `real`: the real arm's pose, drawn solid in its
+    /// place, with `sim` as a ghost where they differ.
+    pub fn render(&mut self, cam: &OrbitCamera, sim: &Arm, real: Option<&Arm>, world: &World, trail: &[Vec3]) {
+        let arm = real.unwrap_or(sim);
+        let ghost = real.filter(|r| (0..NUM_JOINTS).any(|j| (r.angle(j) - sim.angle(j)).abs() > GHOST_MIN_GAP)).map(|_| sim);
         self.trail_data.clear();
         for p in trail {
             self.trail_data.extend_from_slice(&[p.x, p.y, p.z, 0.0, 1.0, 0.0]);
@@ -177,7 +186,8 @@ impl Renderer {
         // Planar shadows: every part projected onto the desk. All shadow fragments
         // share one depth, so overlaps fail the LESS test and don't double-darken.
         let mut parts = scene::arm_parts(arm, self.meshes_ready());
-        parts.extend(scene::world_parts(world, arm.frames().tool));
+        // the box belongs to the simulation, so it rides in the simulated gripper
+        parts.extend(scene::world_parts(world, sim.frames().tool));
         let onto_desk = shadow_matrix(LIGHT_DIR, Vec3::Y, 0.0015);
         gl.enable(GL::BLEND);
         gl.blend_func(GL::SRC_ALPHA, GL::ONE_MINUS_SRC_ALPHA);
@@ -192,6 +202,25 @@ impl Renderer {
 
         if self.trail.count >= 2 {
             self.draw(&self.trail, Mat4::IDENTITY, TRAIL, false);
+        }
+
+        if let Some(ghost) = ghost {
+            // Depth first, then colour where it matches, so only the ghost's
+            // nearest surface is tinted (no darker overlaps inside it).
+            let parts = scene::arm_parts(ghost, self.meshes_ready());
+            gl.color_mask(false, false, false, false);
+            for p in &parts {
+                self.draw(self.mesh(p.shape), p.model, GHOST, false);
+            }
+            gl.color_mask(true, true, true, true);
+            gl.depth_func(GL::LEQUAL);
+            gl.depth_mask(false);
+            gl.enable(GL::BLEND);
+            for p in &parts {
+                self.draw(self.mesh(p.shape), p.model, GHOST, true);
+            }
+            gl.disable(GL::BLEND);
+            gl.depth_mask(true);
         }
     }
 

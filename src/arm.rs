@@ -39,8 +39,9 @@ pub const JOINTS: [JointSpec; NUM_JOINTS] = [
     JointSpec { name: "Gripper", min: deg(-10.0), max: deg(90.0), max_speed: deg(90.0) },
 ];
 
-/// The arm's own start-up pose: upper arm up, forearm level, gripper closed.
-const HOME: [f32; NUM_JOINTS] = [0.0, 0.0, deg(90.0), 0.0];
+/// Resting pose: upper arm leaning back, forearm sloping down and forward (a
+/// triangle over the base, the tool well inside the reach), gripper closed.
+const HOME: [f32; NUM_JOINTS] = [0.0, deg(-15.0), deg(120.0), 0.0];
 
 /// The tool point never goes lower than this above the desk the arm stands on:
 /// with Follow on, the real arm is sent the same pose.
@@ -247,6 +248,7 @@ mod tests {
     #[test]
     fn gripper_jaw_turns_about_its_own_axis_and_leaves_the_tool_point() {
         let mut arm = Arm::new();
+        arm.set_angles([0.0, 0.0, deg(90.0), 0.0]);
         let closed = arm.frames().gripper;
         arm.set_angles([0.0, 0.0, deg(90.0), deg(60.0)]);
         let open = arm.frames().gripper;
@@ -297,6 +299,7 @@ mod tests {
     #[test]
     fn the_tool_stops_at_the_desk_and_can_still_lift_off() {
         let mut arm = Arm::new();
+        arm.set_angles([0.0, 0.0, deg(90.0), 0.0]); // forearm level
         arm.set_input(1, 1.0);
         arm.set_input(2, 1.0);
         for _ in 0..600 {
@@ -315,7 +318,8 @@ mod tests {
 
     #[test]
     fn planar_pose_and_rates_agree_with_the_kinematics() {
-        let arm = Arm::new(); // home: forearm level, pointing straight out
+        let mut arm = Arm::new();
+        arm.set_angles([0.0, 0.0, deg(90.0), 0.0]); // forearm level, pointing straight out
         let (p, d) = arm.planar_tool();
         assert!((p - Vec2::new(0.320, 0.358)).length() < 1e-3, "{p}");
         assert!((d - Vec2::X).length() < 1e-3, "{d}");

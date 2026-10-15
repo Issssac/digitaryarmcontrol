@@ -77,14 +77,20 @@ Calibration learns each gesture's pattern across all 8 channels, so it doesn't
 matter which electrode is on which muscle: put the electrodes on the muscles in
 the guide, any channel each.
 
-The 8th electrode, on the **finger extensors** (back of the forearm, mid-way,
-little-finger side), has no gesture of its own. Grip and wrist curl both come from
-the flexors on the palm side, close together, so they're the likeliest pair to get
-mixed up; gripping also tenses the finger extensors to brace the wrist and a wrist
-curl doesn't, so this channel tells them apart. If the calibration results show a
-different pair mixed up instead, move it: for rotate out vs. wrist back or bicep
-curl, the brachioradialis (top of the forearm, thumb side, below the elbow) is the
-better spot. Recalibrate after moving it.
+The wrist curl and wrist back electrodes go on the **lower third** of the forearm
+(inner and back), well below the pronator teres and the supinator. Higher up, the
+wrist flexors sit right next to the pronator, and in test calibrations wrist curl
+was read as rotate in about a fifth of the time.
+
+The 8th electrode, on the **brachioradialis** (thumb side of the forearm, just
+below the elbow), has no gesture of its own. Rotate out, tricep extend, bicep curl
+and wrist back look alike across the other channels, and rotate out was the most
+often mixed up with tricep extend. The brachioradialis works in rotate out and
+bicep curl but stays quiet in a tricep extend, so this channel tells them apart.
+It used to go on the finger extensors to tell grip from wrist curl, but those two
+already decoded cleanly (grip about 99% at faint strength) without it. If the
+calibration results show a different pair mixed up, move it next to the muscles
+of that pair, then recalibrate.
 
 ### First session with electrodes
 
@@ -101,18 +107,17 @@ better spot. Recalibrate after moving it.
      holding the arm up isn't read as a gesture.
    - **Phase 1, round by round** (5 s each, with an animation of the movement):
      every gesture hard, then every gesture about half as hard (this sets the
-     ceiling), then every gesture as faint as you can (tension only, arm still).
-     The pattern is re-learned from every round, so faint gestures still decode.
+     ceiling). The pattern is re-learned from both rounds.
    - **Phase 2, training:** one gesture at a time, a small meter over the arm, and
      only that gesture's axis moves. Hold the line at the centre for a second.
-     Two hits in a row lower the level a step, a miss raises it, so it settles on
-     the lightest intention you can hold reliably.
+     The level starts at its highest; two hits in a row lower it a step, a miss
+     raises it, so it settles on the lightest intention you can hold reliably.
 
    The schedule runs on the board's sample clock, so the cue and the recorded window
    always line up. Recording only counts clean seconds (still at rest, the right
    gesture at the right strength), and **Skip** passes a step that won't work. At
-   the end each gesture gets its faint level, how often it was told apart from the
-   others, its training hits and its final level; **Redo** on its row recalibrates
+   the end each gesture gets how often its half-strength round was told apart from
+   the others, its training hits and its final level; **Redo** on its row recalibrates
    one, **Train only** practises again. The channel cells then show the gesture each
    channel responds to most. Space still stops the real arm during calibration.
 4. Tune **Gain**: the axis speed when a gesture is held at its level. Nothing moves
@@ -239,7 +244,9 @@ The two share joint angles 1:1.
    real arm by hand and the simulation follows. Keys and EMG don't move anything yet.
 2. **ENGAGE** to switch over. The simulation starts from the real arm's pose, so
    nothing jumps, and from then on the real arm is sent the simulation's pose
-   (manual or EMG). The joint panel shows the real angles under the simulated ones.
+   (manual or EMG). The joint panel shows the real angles under the simulated ones,
+   and the 3D view draws the real arm solid with the simulation's pose as a
+   translucent ghost ahead of it: where the real arm is being sent.
    **DISENGAGE** goes back to mirroring.
 
 **E STOP** (bottom right of the 3D view while the arm is connected) or **Space**
@@ -303,7 +310,7 @@ the common average, and read as zero.
   deviations above what the strongest one's crosstalk would put on it for 0.1 s,
   and the pair holds until the weaker of the two drops under 1 standard deviation
   (whichever is stronger by then). That coupling, a slope and the scatter around it
-  for every pair, is learned from each gesture's hard, half-strength and faint
+  for every pair, is learned from each gesture's hard and half-strength
   recordings, smoothed the way the live decoder smooths, so a gesture that leaks
   onto another's pattern isn't read as both. A third gesture never counts.
   Opposite gestures on one axis cancel. The coupling comes from single gestures,
@@ -349,7 +356,7 @@ src/emg/cyton.rs      33-byte packet parser (resync, drop counting, µV scaling)
 src/emg/filter.rs     biquads
 src/emg/pipeline.rs   signal chain: high-pass, common average, notches, envelope, contact
 src/reach.rs          muscle-pair axes → joints: reach along the gripper via shoulder + elbow
-src/emg/gesture.rs    muscle-pair gestures: rest postures, strong → half → faint rounds, training
+src/emg/gesture.rs    muscle-pair gestures: rest postures, strong → half rounds, training
 src/emg/decoder.rs    non-negative least squares shared by the gesture and finger decoders
 src/emg/finger.rs     finger grid: per-finger power, rest/faint/firmer bands, phase 1 + 2 coach
 src/lib.rs            wasm-bindgen API used by the page

@@ -30,13 +30,15 @@
     <!-- muscle bellies, coloured by joint -->
     <ellipse cx="-2" cy="160" rx="30" ry="62" fill="#4da3ff" opacity=".2"/>
     <ellipse cx="22" cy="285" rx="11" ry="32" fill="#b48cff" opacity=".25" transform="rotate(35 22 285)"/>
-    <ellipse cx="2" cy="330" rx="20" ry="40" fill="#ff9f43" opacity=".2"/>
+    <ellipse cx="0" cy="415" rx="15" ry="26" fill="#ff9f43" opacity=".2"/>
+    <ellipse cx="-42" cy="292" rx="11" ry="42" fill="#8b919c" opacity=".22" transform="rotate(8 -42 292)"/>
     <ellipse cx="22" cy="392" rx="13" ry="36" fill="#3ddc97" opacity=".22" transform="rotate(-6 22 392)"/>
   </g>
   <!-- front electrodes (world coords) -->
   <use href="#el" xlink:href="#el" x="228" y="269" stroke="#4da3ff"/>
   <use href="#el" xlink:href="#el" x="251" y="389" stroke="#b48cff"/>
-  <use href="#el" xlink:href="#el" x="232" y="440" stroke="#ff9f43"/>
+  <use href="#el" xlink:href="#el" x="230" y="528" stroke="#ff9f43"/>
+  <use href="#el" xlink:href="#el" x="190" y="390" stroke="#8b919c"/>
   <use href="#el" xlink:href="#el" x="252" y="500" stroke="#3ddc97"/>
 
   <!-- front labels -->
@@ -49,13 +51,21 @@
     <text x="310" y="387">Wrist rotate in <tspan font-weight="700" fill="#b48cff">→ Base +</tspan></text>
     <text x="310" y="403" font-size="11" fill="#8b919c">pronator teres · just below elbow crease</text>
 
-    <path d="M 305 440 L 243 440" stroke="#ff9f43" stroke-width="1"/>
-    <text x="310" y="438">Wrist curl <tspan font-weight="700" fill="#ff9f43">→ Elbow −</tspan> (aims)</text>
-    <text x="310" y="454" font-size="11" fill="#8b919c">wrist flexors · inner forearm, upper third</text>
 
     <path d="M 305 500 L 263 500" stroke="#3ddc97" stroke-width="1"/>
     <text x="310" y="498">Grip <tspan font-weight="700" fill="#3ddc97">→ Gripper closes</tspan> · relax opens</text>
     <text x="310" y="514" font-size="11" fill="#8b919c">finger flexors · mid forearm, pinky side</text>
+
+    <path d="M 305 552 L 241 531" stroke="#ff9f43" stroke-width="1"/>
+    <text x="310" y="550">Wrist curl <tspan font-weight="700" fill="#ff9f43">→ Elbow −</tspan> (aims)</text>
+    <text x="310" y="566" font-size="11" fill="#8b919c">wrist flexors · inner forearm, lower third</text>
+    <text x="310" y="580" font-size="11" fill="#8b919c">well below the pronator, so they don't overlap</text>
+
+    <path d="M 165 390 L 179 390" stroke="#8b919c" stroke-width="1"/>
+    <text x="160" y="372" text-anchor="end"><tspan font-weight="700" fill="#b4b9c2">Helper</tspan> · no gesture</text>
+    <text x="160" y="388" font-size="11" fill="#8b919c" text-anchor="end">brachioradialis · thumb</text>
+    <text x="160" y="402" font-size="11" fill="#8b919c" text-anchor="end">side, just below the elbow</text>
+    <text x="160" y="418" font-size="11" fill="#8b919c" text-anchor="end">tells rotate out from tricep</text>
   </g>
   <text x="220" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ thumb side</text>
   <text x="240" y="712" font-size="11" fill="#8b919c">body side ▶</text>
@@ -67,15 +77,13 @@
     <use href="#fingers" xlink:href="#fingers"/>
     <ellipse cx="0" cy="150" rx="32" ry="72" fill="#4da3ff" opacity=".2"/>
     <ellipse cx="-36" cy="288" rx="11" ry="24" fill="#b48cff" opacity=".25" transform="rotate(20 -36 288)"/>
-    <ellipse cx="-14" cy="338" rx="22" ry="48" fill="#ff9f43" opacity=".2"/>
-    <ellipse cx="4" cy="384" rx="13" ry="32" fill="#8b919c" opacity=".2"/>
+    <ellipse cx="-10" cy="398" rx="16" ry="28" fill="#ff9f43" opacity=".2"/>
     <circle cx="0" cy="250" r="11" fill="#ffffff" opacity=".1"/>
   </g>
   <use href="#el" xlink:href="#el" x="648" y="267" stroke="#4da3ff"/>
   <use href="#el" xlink:href="#el" x="640" y="360" stroke="#ffffff"/>
   <use href="#el" xlink:href="#el" x="677" y="397" stroke="#b48cff"/>
-  <use href="#el" xlink:href="#el" x="658" y="441" stroke="#ff9f43"/>
-  <use href="#el" xlink:href="#el" x="636" y="494" stroke="#8b919c"/>
+  <use href="#el" xlink:href="#el" x="650" y="508" stroke="#ff9f43"/>
   <use href="#el" xlink:href="#el" x="614" y="548" stroke="#d9dce1"/>
 
   <g font-size="13" fill="#e3e6eb">
@@ -91,18 +99,13 @@
     <text x="716" y="395">Wrist rotate out <tspan font-weight="700" fill="#b48cff">→ Base −</tspan></text>
     <text x="716" y="411" font-size="11" fill="#8b919c">supinator · below outer elbow</text>
 
-    <path d="M 711 441 L 669 441" stroke="#ff9f43" stroke-width="1"/>
-    <text x="716" y="439">Wrist back <tspan font-weight="700" fill="#ff9f43">→ Elbow +</tspan> (aims)</text>
-    <text x="716" y="455" font-size="11" fill="#8b919c">wrist extensors · upper forearm</text>
+    <path d="M 711 508 L 661 508" stroke="#ff9f43" stroke-width="1"/>
+    <text x="716" y="506">Wrist back <tspan font-weight="700" fill="#ff9f43">→ Elbow +</tspan> (aims)</text>
+    <text x="716" y="522" font-size="11" fill="#8b919c">wrist extensors · lower third</text>
 
-    <path d="M 711 494 L 647 494" stroke="#8b919c" stroke-width="1"/>
-    <text x="716" y="492"><tspan font-weight="700" fill="#b4b9c2">Finger extensors</tspan> · helper</text>
-    <text x="716" y="508" font-size="11" fill="#8b919c">helps tell grip from wrist curl</text>
-    <text x="716" y="522" font-size="11" fill="#8b919c">extensor digitorum · mid forearm</text>
-
-    <path d="M 604 548 L 560 548" stroke="#d9dce1" stroke-width="1"/>
-    <text x="555" y="546" text-anchor="end"><tspan font-weight="700" fill="#d9dce1">BIAS</tspan> Wrist bone</text>
-    <text x="555" y="562" font-size="11" fill="#8b919c" text-anchor="end">pinky-side bump · bottom BIAS pin</text>
+    <path d="M 711 558 L 624 549" stroke="#d9dce1" stroke-width="1"/>
+    <text x="716" y="556"><tspan font-weight="700" fill="#d9dce1">BIAS</tspan> Wrist bone</text>
+    <text x="716" y="572" font-size="11" fill="#8b919c">pinky-side bump · bottom BIAS pin</text>
   </g>
   <text x="630" y="712" font-size="11" fill="#8b919c" text-anchor="end">◀ body side</text>
   <text x="650" y="712" font-size="11" fill="#8b919c">thumb side ▶</text>
@@ -182,7 +185,7 @@
     <rect x="910" y="628" width="12" height="12" rx="3" fill="#4da3ff"/><text x="930" y="639" font-weight="700">Reach</text><text x="1022" y="639">out: tricep extend  /  in: bicep curl</text>
     <rect x="910" y="648" width="12" height="12" rx="3" fill="#ff9f43"/><text x="930" y="659" font-weight="700">Elbow (aim)</text><text x="1022" y="659">+ wrist back  /  − wrist curl</text>
     <rect x="910" y="668" width="12" height="12" rx="3" fill="#3ddc97"/><text x="930" y="679" font-weight="700">Gripper</text><text x="1022" y="679">grip closes  /  relax opens</text>
-    <rect x="910" y="688" width="12" height="12" rx="3" fill="#8b919c"/><text x="930" y="699" font-weight="700">Finger ext.</text><text x="1022" y="699" fill="#b4b9c2">no gesture · helps tell grip from wrist curl</text>
+    <rect x="910" y="688" width="12" height="12" rx="3" fill="#8b919c"/><text x="930" y="699" font-weight="700">Helper</text><text x="1022" y="699" fill="#b4b9c2">no gesture · tells rotate out from tricep</text>
   </g>
   <text x="910" y="718" font-size="11" fill="#8b919c">Reach moves the gripper tip in/out along the way the gripper points.</text>
 </svg>

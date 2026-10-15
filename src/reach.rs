@@ -95,7 +95,8 @@ mod tests {
 
     #[test]
     fn reach_moves_the_tip_straight_along_the_gripper() {
-        let mut arm = Arm::new(); // home: forearm level, pointing straight out
+        let mut arm = Arm::new();
+        arm.set_angles([0.0, 0.0, crate::arm::deg(90.0), 0.0]); // forearm level, pointing straight out
         let mut reach = Reach::default();
         let (start, _) = arm.planar_tool();
         run(&mut arm, &mut reach, [0.0, 1.0, 0.0, 0.0], 0.8);

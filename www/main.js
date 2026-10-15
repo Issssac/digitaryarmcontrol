@@ -124,11 +124,6 @@ function setSource(src) {
   $('emg-state').textContent = src === 'emg' ? (sim ? 'Simulated EMG Engaged' : 'EMG Engaged') : 'Manual Mode Engaged';
   $('emg-state').classList.toggle('emg', src === 'emg');
   if (src === 'emg') requireStream(); // clears a "connect first" warning
-  $('source-hint').textContent = src !== 'emg'
-    ? ''
-    : scheme === 'finger'
-      ? 'Arm follows finger tension. With Simulate on, A/W/F = firmer (+) and D/S/R = faint (−) on the finger driving that joint (Shift = a real movement); 1/2/3 = arm limp / forearm raised / arm up. Gripper: Q / E.'
-      : 'Arm follows your gestures: wrist back/curl aim the elbow, tricep/bicep reach out/in along the gripper, and it closes while you grip. With Simulate on: A/D base, W/S reach out/in, F/R elbow, E grip (Shift = full).';
 }
 
 // ---- keyboard --------------------------------------------------------------
@@ -626,9 +621,7 @@ const SETS = {
     trained: () => app.gesture_trained(),
     name: (g) => GESTURES[g].short,
     restRead: 'a gesture',
-    prepare: (step, g) => (step === FSTEP.FAINT
-      ? 'Tension only this time: as if about to do it, with the arm still.'
-      : `${step === FSTEP.HARD ? 'Arm back down, forearm on the table. ' : ''}${GESTURES[g].cue}: ${GESTURES[g].how}. A real contraction this time.`),
+    prepare: (step, g) => `${step === FSTEP.HARD ? 'Arm back down, forearm on the table. ' : ''}${GESTURES[g].cue}: ${GESTURES[g].how}. A real contraction this time.`,
     hard: (g) => [`${GESTURES[g].cue}: hard`, `${cap(GESTURES[g].how)}, and hold. Keep the rest of the arm relaxed.`],
     other: (h) => `That reads as ${GESTURES[h].short}: keep the rest of the arm relaxed`,
     letGo: () => 'Let go',
@@ -1122,27 +1115,25 @@ function finishFingerResults() {
     + 'Redo a finger from its row in the panel.';
 }
 
-/** gesture_report(): [calibrated, faint, isolation, hits, trials, level, stasis, mixed] per gesture. */
-const GREPORT_LEN = 8;
+/** gesture_report(): [calibrated, isolation, hits, trials, level, stasis] per gesture. */
+const GREPORT_LEN = 6;
 
 function finishGestureResults() {
   const rep = app.gesture_report();
   const rows = GESTURES.map((gs, g) => {
-    const [cal, faint, isolation, hits, trials, level, , mixed] = rep.slice(g * GREPORT_LEN, (g + 1) * GREPORT_LEN);
+    const [cal, isolation, hits, trials, level] = rep.slice(g * GREPORT_LEN, (g + 1) * GREPORT_LEN);
     const name = `<span>${gs.short} → ${jointFor(g)}</span>`;
     const redo = `<button class="small" data-redo="${g}" title="Recalibrate and retrain just this gesture">Redo</button>`;
-    if (!cal) return `<div class="res gres">${name}<span class="bad">skipped</span><span></span><span></span><span></span>${redo}</div>`;
+    if (!cal) return `<div class="res gres">${name}<span class="bad">skipped</span><span></span><span></span>${redo}</div>`;
     const training = trials ? `<span class="${grade(hits / trials, 0.6, 0.4)}">${hits}/${trials} hits</span>` : '<span>—</span>';
-    return `<div class="res gres">${name}<span class="mono">${Math.round(faint * 100)}%</span>`
-      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? 'The faint round looked more like another gesture, so it was not used' : ''}">`
-      + `${Math.round(isolation * 100)}%${mixed ? ' · mixed' : ''}</span>${training}`
+    return `<div class="res gres">${name}`
+      + `<span class="${grade(isolation, 0.9, 0.7)}">${Math.round(isolation * 100)}%</span>${training}`
       + `<span class="mono">${Math.round(level * 100)}%</span>${redo}</div>`;
   });
-  $('coach-results').innerHTML = '<div class="res gres head"><span>Gesture → axis</span><span>faint</span>'
+  $('coach-results').innerHTML = '<div class="res gres head"><span>Gesture → axis</span>'
     + '<span>isolated</span><span>training</span><span>level</span><span></span></div>' + rows.join('');
   $('coach-step').textContent = 'Gesture calibration complete';
-  $('coach-detail').textContent = 'Faint: how far below the ceiling (your half-strength contraction) the faint round read. '
-    + 'Isolated: how often that faint intention read as the right gesture ("mixed": it looked like another one, so it wasn\'t used). '
+  $('coach-detail').textContent = 'Isolated: how often the half-strength contraction read as the right gesture. '
     + 'Level: the power that now drives its axis at full speed; training stepped it down after two hits in a row and up after a miss. '
     + 'Train only practises again; Redo recalibrates one gesture.';
 }
@@ -1419,9 +1410,14 @@ $('arm-engage').onclick = () => {
   updateArmButtons();
 };
 
-/** Before each frame: while not following, the simulation takes the real arm's pose. */
+/**
+ * Before each frame: while not following, the simulation takes the real arm's
+ * pose; while following, the real arm is drawn solid and the simulation as a ghost.
+ */
 function trackArm() {
-  if (roarm?.live && !roarm.following) app.track_joints(roarm.real);
+  if (!roarm?.live) return;
+  if (roarm.following) app.show_real(roarm.real);
+  else app.track_joints(roarm.real);
 }
 
 function updateArm() {
@@ -1522,7 +1518,7 @@ async function loadCalibration() {
     saved = await res.json();
     app.import_calibration(fromBase64(saved.calibration));
   } catch (err) {
-    setSaved(`Saved calibration not loaded (${err.message ?? err}). The file is kept until a new calibration finishes.`);
+    console.warn('Saved calibration not loaded:', err);
     return;
   }
   applySettings(saved.settings ?? {});
