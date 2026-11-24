@@ -4,3 +4,5 @@
 /calibration.json
 /calibration.tmp
 /www/models
+/recordings
+__pycache__/

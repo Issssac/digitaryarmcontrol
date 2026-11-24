@@ -2,6 +2,7 @@ import init, { App } from './pkg/arm_sim.js';
 import { CytonSerial } from './serial.js';
 import { CytonSimulator } from './simulator.js';
 import { RoArm, SERVOS_DOWN } from './roarm.js';
+import { CalibrationRecorder } from './recorder.js';
 
 const NUM_CH = 8;
 // [+ key, − key] per joint: base, shoulder, elbow, gripper (+ opens)
@@ -81,6 +82,17 @@ try {
 } catch (err) {
   fatal(`Could not start the renderer: ${err}`);
   throw err;
+}
+
+// every calibration run is recorded to recordings/<id>/ (see recorder.js, serve.py)
+const recorder = new CalibrationRecorder({
+  packets: () => app.stats()[0],
+  onError: (msg) => { $('saved-status').textContent = msg; },
+});
+/** All stream bytes go through here: to the parser, and to an active recording. */
+function feedStream(bytes) {
+  recorder.capture(bytes);
+  app.push_serial(bytes);
 }
 
 const names = app.joint_names();
@@ -402,7 +414,7 @@ const fingerRows = FINGERS.map((fg, f) => {
   const select = row.querySelector('select');
   select.value = String(app.finger_joints()[f]);
   select.onchange = () => app.set_finger_joint(f, Number(select.value));
-  row.querySelector('button').onclick = () => startCalibration(() => app.finger_calibrate_one(f, true), 'finger');
+  row.querySelector('button').onclick = () => startCalibration(() => app.finger_calibrate_one(f, true), 'finger', `redo ${FINGERS[f].name}`);
   $('fingers').append(row);
   return { row, state: row.querySelector('.state'), track: row.querySelector('.ftrack'), note: row.querySelector('small') };
 });
@@ -450,7 +462,7 @@ function drawCalPills() {
 }
 
 function setScheme(s) {
-  if (coach.active) stopCalibration();
+  if (coach.active) stopCalibration('scheme changed');
   scheme = s;
   app.set_finger_mode(s === 'finger');
   document.body.classList.toggle('fingers', s === 'finger');
@@ -468,9 +480,9 @@ bindRange('fspeed', (v) => app.set_finger_speed(v), 2);
 $('fsimple').checked = app.finger_simple_bands();
 $('fsimple').onchange = (e) => app.set_finger_simple_bands(e.target.checked);
 $('fcal').onclick = () => {
-  if (requireStream()) showGuide(() => startCalibration(() => app.finger_calibrate(true), 'finger'));
+  if (requireStream()) showGuide(() => startCalibration(() => app.finger_calibrate(true), 'finger', 'full'));
 };
-$('ftrain').onclick = () => startCalibration(() => app.finger_train(), 'finger');
+$('ftrain').onclick = () => startCalibration(() => app.finger_train(), 'finger', 'train only');
 
 // ---- OpenBCI connection / simulator ----------------------------------------
 
@@ -513,11 +525,11 @@ $('connect').onclick = async () => {
   }
   serial = new CytonSerial({
     wiring: 'common',
-    onData: (bytes) => app.push_serial(bytes),
+    onData: feedStream,
     onStatus: setBci,
     onClose: () => {
       serial = null;
-      stopCalibration();
+      stopCalibration('stream closed');
       setSource('manual');
       updateButtons();
       setBci('Disconnected');
@@ -540,7 +552,7 @@ $('connect').onclick = async () => {
 $('simulate').onclick = () => {
   if (sim) {
     sim = null;
-    stopCalibration();
+    stopCalibration('simulation stopped');
     setSource('manual');
     setBci('');
   } else {
@@ -711,7 +723,7 @@ function pumpSimulator(now) {
   }
   levels.forEach((v, ch) => sim.setLevel(ch, v));
   const bytes = sim.pump(now);
-  if (bytes.length) app.push_serial(bytes);
+  if (bytes.length) feedStream(bytes);
 }
 
 // ---- calibration coach ----------------------------------------------------------
@@ -756,12 +768,27 @@ function showCoachParts(running) {
   $('coach-bar').parentElement.hidden = !running;
 }
 
-/** kind: 'gesture' (muscle pairs) or 'finger'. */
-function startCalibration(begin, kind) {
+/** kind: 'gesture' (muscle pairs) or 'finger'; mode: 'full', 'train only', 'redo …' for the log. */
+function startCalibration(begin, kind, mode = '') {
   if (!requireStream()) return;
+  if (coach.active) stopCalibration('restarted');
+  const before = toBase64(app.export_calibration());
   begin();
   const s = SETS[kind].status();
   if (!s.length) return;
+  recorder.start({
+    kind,
+    mode,
+    source: sim ? 'simulator' : 'cyton',
+    sampleRate: 250,
+    uvPerCount: 4.5 / 24 / 8388607 * 1e6,
+    settings: panelSettings(),
+    calibrationBefore: before,
+    statusFields: STATUS_FIELDS,
+    userAgent: navigator.userAgent,
+  });
+  coach.lastLogKey = '';
+  coach.lastLogAt = 0;
   coach.kind = kind;
   coach.active = true;
   coach.wasClean = null;
@@ -774,7 +801,8 @@ function startCalibration(begin, kind) {
   beep(660); // inside the click, which also unlocks audio for later cues
 }
 
-function stopCalibration() {
+function stopCalibration(reason = 'cancelled') {
+  if (coach.active) recordEnd(reason);
   app.gesture_cancel();
   app.finger_cancel();
   coach.active = false;
@@ -788,7 +816,10 @@ function coachReady() {
   if (!coach.active) return;
   const set = SETS[coach.kind];
   const s = set.status();
-  if (s.length && s[19] === 1) set.ready();
+  if (s.length && s[19] === 1) {
+    recorder.event('ready');
+    set.ready();
+  }
 }
 $('coach-ready-btn').addEventListener('click', coachReady);
 
@@ -897,6 +928,7 @@ function drawCoach(now) {
   const [step, i, phase, progress, secondsLeft, check, arg, stuck, kind, meter, lo, hi, segment, , round, rounds, goal, aim, posture, waitFlag] = s;
   const waiting = waitFlag === 1;
   const stalled = isStalled(now);
+  logStatus(now, s, stalled);
   const count = Math.ceil(secondsLeft - 1e-3);
 
   // averaged for display; restarts with every step so it doesn't slide in from the last one
@@ -1077,8 +1109,48 @@ function drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kin
   });
 }
 
+// ---- calibration log ---------------------------------------------------------
+
+/** Names for the coach status vector (finger_status / gesture_status), as logged. */
+const STATUS_FIELDS = ['step', 'index', 'phase', 'progress', 'secondsLeft', 'check', 'arg', 'stuck', 'meterKind',
+  'meter', 'lo', 'hi', 'segment', 'segments', 'round', 'rounds', 'goal', 'aim', 'posture', 'waiting'];
+const LOG_TICK_MS = 100;
+
+/** Every change of step, phase, round or check, and the full status 10× a second. */
+function logStatus(now, s, stalled) {
+  const status = [...s];
+  const key = `${s[0]}:${s[1]}:${s[2]}:${s[14]}:${s[5]}:${s[6]}:${s[19]}:${stalled}`;
+  if (key !== coach.lastLogKey) {
+    recorder.event('status', { status, stalled, changed: true });
+    coach.lastLogKey = key;
+    coach.lastLogAt = now;
+  } else if (now - coach.lastLogAt >= LOG_TICK_MS) {
+    recorder.event('status', { status, stalled, envelopes: [...app.envelopes()], contact: [...app.contact()] });
+    coach.lastLogAt = now;
+  }
+}
+
+/** Writes result.json: how the run ended and everything the decoders learned. */
+function recordEnd(outcome) {
+  const finger = coach.kind === 'finger';
+  recorder.finish({
+    outcome,
+    kind: coach.kind,
+    report: [...(finger ? app.finger_report() : app.gesture_report())],
+    reportLen: finger ? REPORT_LEN : GREPORT_LEN,
+    calibrated: finger ? app.finger_trained() : app.gesture_calibrated(),
+    bands: [...(finger ? app.finger_bands() : app.gesture_bands())],
+    channelGestures: finger ? null : [...app.channel_gestures()],
+    fingerJoints: finger ? [...app.finger_joints()] : null,
+    stats: [...app.stats()],
+    settings: panelSettings(),
+    calibration: toBase64(app.export_calibration()),
+  });
+}
+
 function finishCalibration() {
   coach.active = false;
+  recordEnd('complete');
   saveCalibration();
   $('trainer').hidden = true;
   $('trainer-anim').hidden = true;
@@ -1148,19 +1220,24 @@ function finishGestureResults() {
 }
 
 $('gcal').onclick = () => {
-  if (requireStream()) showGuide(() => startCalibration(() => app.gesture_calibrate(true), 'gesture'));
+  if (requireStream()) showGuide(() => startCalibration(() => app.gesture_calibrate(true), 'gesture', 'full'));
 };
-$('gtrain').onclick = () => startCalibration(() => app.gesture_train(), 'gesture');
+$('gtrain').onclick = () => startCalibration(() => app.gesture_train(), 'gesture', 'train only');
 $('coach-cancel').onclick = () => {
-  stopCalibration();
+  recorder.event('cancel');
+  stopCalibration('cancelled');
 };
 $('coach-close').onclick = () => { coach.el.hidden = true; };
 $('coach-results').addEventListener('click', (e) => {
   const g = e.target.dataset?.redo;
-  if (g !== undefined) startCalibration(() => app.gesture_calibrate_one(Number(g), true), 'gesture');
+  if (g !== undefined) startCalibration(() => app.gesture_calibrate_one(Number(g), true), 'gesture', `redo ${GESTURES[g].short}`);
 });
-$('coach-skip').onclick = () => SETS[coach.kind].skip();
-$('trainer-skip').onclick = () => SETS[coach.kind].skip();
+const skipStep = () => {
+  recorder.event('skip');
+  SETS[coach.kind].skip();
+};
+$('coach-skip').onclick = skipStep;
+$('trainer-skip').onclick = skipStep;
 $('trainer-stop').onclick = () => $('coach-cancel').click();
 addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
