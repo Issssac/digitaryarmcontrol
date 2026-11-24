@@ -179,7 +179,9 @@ impl App {
         // phase 1, the trained movement's axis in phase 2. Both drive axes (base,
         // reach, elbow, gripper), not joints.
         let axes = active!(self, c => c.axis_inputs());
-        let mut inputs = if self.use_emg { self.reach.joint_inputs(&self.arm, axes, dt) } else { self.manual };
+        // manual keys and buttons drive the same axes, so W/S reach in a straight line too
+        let axes = if self.use_emg { axes } else { self.manual };
+        let mut inputs = self.reach.joint_inputs(&self.arm, axes, dt);
         // Drift only once the whole arm is idle, so holding one joint still
         // while driving another doesn't pull the held one back home. The gripper
         // only ever goes where its button sends it.
@@ -256,7 +258,8 @@ impl App {
         self.gripper_target > (GRIPPER_OPEN + GRIPPER_CLOSED) / 2.0
     }
 
-    /// Manual velocity command (-1..1), used while EMG control is off.
+    /// Manual axis command (-1..1) while EMG control is off: base, reach (in a
+    /// straight line along the gripper, like EMG), elbow, gripper.
     pub fn set_input(&mut self, joint: usize, value: f32) {
         if let Some(m) = self.manual.get_mut(joint) {
             *m = value;

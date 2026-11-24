@@ -205,9 +205,10 @@ const joints = names.map((name, j) => {
   const col = document.createElement('div');
   col.className = 'jcol';
   const [plus, minus] = KEYS[j];
-  const verbs = j === GRIPPER ? ['open', 'close'] : ['+', '−'];
+  // W/S reach in a straight line along the gripper (shoulder and elbow together), as EMG does
+  const verbs = j === GRIPPER ? ['open', 'close'] : j === 1 ? ['reach out', 'reach in'] : ['+', '−'];
   col.innerHTML = `
-    <div class="jname">${name}</div>
+    <div class="jname" ${j === 1 ? `title="Reach: the tip moves straight along where the gripper points. The angle is the ${name.toLowerCase()}'s."` : ''}>${j === 1 ? 'Reach' : name}</div>
     <div class="jangle mono"></div>
     <div class="jreal mono"></div>
     <button class="jbtn" tabindex="-1" data-key="${plus}" title="Hold to ${verbs[0] === '+' ? 'move +' : verbs[0]} (${plus.toUpperCase()})">+<small>${plus.toUpperCase()}</small></button>
