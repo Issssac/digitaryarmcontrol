@@ -40,6 +40,17 @@ pub const NUM_GESTURES: usize = 7;
 /// reach out / in, wrist back / curl → elbow + / −, grip → gripper closed.
 pub const AXES: [(usize, f32); NUM_GESTURES] =
     [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0), (3, -1.0)];
+
+/// Digit array: eight bipolar pairs, CH1–3 on the finger flexors and CH4–6 on
+/// the finger extensors (thumb side to little-finger side), CH7 biceps, CH8
+/// triceps. Its movements, in order: thumb flex / extend, index flex / extend,
+/// ring + little flex / extend, bicep, tricep.
+pub const NUM_DIGITS: usize = 8;
+/// Thumb flex / extend → gripper close / open, index flex / extend → tip down
+/// / up (elbow + / −), ring + little flex / extend → base clockwise /
+/// counter-clockwise seen from above (base − / +), bicep / tricep → reach in / out.
+pub const DIGIT_AXES: [(usize, f32); NUM_DIGITS] =
+    [(3, -1.0), (3, 1.0), (2, 1.0), (2, -1.0), (0, -1.0), (0, 1.0), (1, -1.0), (1, 1.0)];
 /// Rest postures recorded in calibration: limp on the table (the reference),
 /// forearm raised with the elbow down, arm held up unsupported.
 pub const POSTURES: usize = 3;
@@ -328,37 +339,39 @@ struct Run {
     streak: u32,
 }
 
-pub struct GestureControl {
+pub struct GestureControl<const G: usize> {
+    /// Axis (base, reach, elbow, gripper) and direction each movement drives.
+    axes: [(usize, f32); G],
     rest: Option<RestModel>,
     /// Pattern of each raised posture (posture p at index p − 1), in z units.
     postures: Vec<Features>,
     /// Raw z samples of each posture's rest recording (index = posture).
     posture_rest: Vec<Vec<Features>>,
     /// Each gesture's noise floor in each recorded posture.
-    stasis_by: Vec<[f64; NUM_GESTURES]>,
+    stasis_by: Vec<[f64; G]>,
     z_slow: Features,
     posture_w: Vec<f64>,
     z_raw: Features,
-    data: [GestureData; NUM_GESTURES],
-    templates: [Option<Features>; NUM_GESTURES],
+    data: [GestureData; G],
+    templates: [Option<Features>; G],
     /// Current noise floor of each gesture: the posture floors, blended by posture.
-    stasis: [f64; NUM_GESTURES],
+    stasis: [f64; G],
     /// Power at which each gesture drives its axis at full speed.
-    level: [f64; NUM_GESTURES],
-    report: [GestureReport; NUM_GESTURES],
+    level: [f64; G],
+    report: [GestureReport; G],
     pub gain: f32,
     envelope: [f32; NUM_CHANNELS],
     contact: [bool; NUM_CHANNELS],
     recent: [f32; NUM_CHANNELS],
     z: Features,
-    power: [f64; NUM_GESTURES],
+    power: [f64; G],
     /// Driving its axis (with hysteresis down to stasis).
-    active: [bool; NUM_GESTURES],
+    active: [bool; G],
     /// Time each gesture has been past its buffer while not yet active.
-    rising_t: [f32; NUM_GESTURES],
+    rising_t: [f32; G],
     /// coupling[a][b]: b's power when only a is made, as (slope on a's power,
     /// standard deviation around it). Worked out from the recordings, not saved.
-    coupling: [[(f64, f64); NUM_GESTURES]; NUM_GESTURES],
+    coupling: [[(f64, f64); G]; G],
     /// The two gestures currently decoded together, if any.
     compound: Option<(usize, usize)>,
     /// Time the runner-up has stood out from the strongest one's crosstalk.
@@ -368,26 +381,76 @@ pub struct GestureControl {
 }
 
 /// Everything calibration and training learned, to save and restore it.
+/// Saved field by field as fixed-length tuples, the way serde saves a plain
+/// array, so muscle-pair calibrations saved before this was generic still load.
 #[derive(Serialize, Deserialize)]
-pub struct Calibration {
+pub struct Calibration<const G: usize> {
     rest: Option<RestModel>,
     postures: Vec<Features>,
     posture_rest: Vec<Vec<Features>>,
-    data: [GestureData; NUM_GESTURES],
-    templates: [Option<Features>; NUM_GESTURES],
-    level: [f64; NUM_GESTURES],
-    report: [GestureReport; NUM_GESTURES],
+    #[serde(with = "fixed")]
+    data: [GestureData; G],
+    #[serde(with = "fixed")]
+    templates: [Option<Features>; G],
+    #[serde(with = "fixed")]
+    level: [f64; G],
+    #[serde(with = "fixed")]
+    report: [GestureReport; G],
 }
 
-impl Default for GestureControl {
-    fn default() -> Self {
-        Self::new()
+/// Serde for `[T; N]` of any length, as a tuple of N elements (serde's own
+/// array impls stop at 32 and don't cover a const-generic length).
+mod fixed {
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::ser::SerializeTuple;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::marker::PhantomData;
+
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(v: &[T; N], s: S) -> Result<S::Ok, S::Error> {
+        let mut t = s.serialize_tuple(N)?;
+        for x in v {
+            t.serialize_element(x)?;
+        }
+        t.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<[T; N], D::Error> {
+        struct V<T, const N: usize>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for V<T, N> {
+            type Value = [T; N];
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a tuple of {N} elements")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[T; N], A::Error> {
+                let mut v = Vec::with_capacity(N);
+                for i in 0..N {
+                    v.push(seq.next_element()?.ok_or_else(|| A::Error::invalid_length(i, &self))?);
+                }
+                v.try_into().map_err(|_| A::Error::custom("wrong length"))
+            }
+        }
+        d.deserialize_tuple(N, V::<T, N>(PhantomData))
     }
 }
 
-impl GestureControl {
-    pub fn new() -> Self {
+impl GestureControl<NUM_GESTURES> {
+    /// Muscle pairs: the seven gestures of `AXES`.
+    pub fn muscle() -> Self {
+        Self::new(AXES)
+    }
+}
+
+impl GestureControl<NUM_DIGITS> {
+    /// The digit array: the eight movements of `DIGIT_AXES`.
+    pub fn digits() -> Self {
+        Self::new(DIGIT_AXES)
+    }
+}
+
+impl<const G: usize> GestureControl<G> {
+    pub fn new(axes: [(usize, f32); G]) -> Self {
         Self {
+            axes,
             rest: None,
             postures: Vec::new(),
             posture_rest: Vec::new(),
@@ -395,20 +458,20 @@ impl GestureControl {
             z_slow: [0.0; NUM_CHANNELS],
             posture_w: Vec::new(),
             z_raw: [0.0; NUM_CHANNELS],
-            data: Default::default(),
-            templates: [None; NUM_GESTURES],
-            stasis: [STASIS_MIN; NUM_GESTURES],
-            level: [LEVEL_MAX; NUM_GESTURES],
-            report: [GestureReport::default(); NUM_GESTURES],
+            data: std::array::from_fn(|_| GestureData::default()),
+            templates: [None; G],
+            stasis: [STASIS_MIN; G],
+            level: [LEVEL_MAX; G],
+            report: [GestureReport::default(); G],
             gain: DEFAULT_GAIN,
             envelope: [0.0; NUM_CHANNELS],
             contact: [true; NUM_CHANNELS],
             recent: [0.0; NUM_CHANNELS],
             z: [0.0; NUM_CHANNELS],
-            power: [0.0; NUM_GESTURES],
-            active: [false; NUM_GESTURES],
-            rising_t: [0.0; NUM_GESTURES],
-            coupling: [[(0.0, COUPLING_MIN_SD); NUM_GESTURES]; NUM_GESTURES],
+            power: [0.0; G],
+            active: [false; G],
+            rising_t: [0.0; G],
+            coupling: [[(0.0, COUPLING_MIN_SD); G]; G],
             compound: None,
             compound_t: 0.0,
             run: None,
@@ -416,7 +479,7 @@ impl GestureControl {
         }
     }
 
-    pub fn calibration(&self) -> Calibration {
+    pub fn calibration(&self) -> Calibration<G> {
         Calibration {
             rest: self.rest.clone(),
             postures: self.postures.clone(),
@@ -428,7 +491,7 @@ impl GestureControl {
         }
     }
 
-    pub fn restore(&mut self, cal: Calibration) {
+    pub fn restore(&mut self, cal: Calibration<G>) {
         self.run = None;
         self.posture_w = vec![0.0; cal.postures.len()];
         self.rest = cal.rest;
@@ -446,11 +509,11 @@ impl GestureControl {
     /// Clears the live state after a reconnect (keeps everything learned).
     pub fn reset_state(&mut self) {
         self.recent = [0.0; NUM_CHANNELS];
-        self.power = [0.0; NUM_GESTURES];
+        self.power = [0.0; G];
         self.z_slow = [0.0; NUM_CHANNELS];
         self.posture_w.iter_mut().for_each(|w| *w = 0.0);
-        self.active = [false; NUM_GESTURES];
-        self.rising_t = [0.0; NUM_GESTURES];
+        self.active = [false; G];
+        self.rising_t = [0.0; G];
         self.compound = None;
         self.compound_t = 0.0;
         self.inputs = [0.0; NUM_JOINTS];
@@ -468,14 +531,19 @@ impl GestureControl {
 
     /// The gesture driving `axis` in either direction is calibrated.
     pub fn drives(&self, axis: usize) -> bool {
-        AXES.iter().enumerate().any(|(g, &(a, _))| a == axis && self.templates[g].is_some())
+        self.axes.iter().enumerate().any(|(g, &(a, _))| a == axis && self.templates[g].is_some())
     }
 
-    pub fn powers(&self) -> [f64; NUM_GESTURES] {
+    /// Axis and direction of each movement.
+    pub fn axes(&self) -> [(usize, f32); G] {
+        self.axes
+    }
+
+    pub fn powers(&self) -> [f64; G] {
         self.power
     }
 
-    pub fn active(&self) -> [bool; NUM_GESTURES] {
+    pub fn active(&self) -> [bool; G] {
         self.active
     }
 
@@ -484,7 +552,7 @@ impl GestureControl {
         self.inputs
     }
 
-    pub fn report(&self) -> [GestureReport; NUM_GESTURES] {
+    pub fn report(&self) -> [GestureReport; G] {
         std::array::from_fn(|g| GestureReport {
             calibrated: self.templates[g].is_some(),
             level: self.bands(g).level,
@@ -520,7 +588,7 @@ impl GestureControl {
     pub fn channel_gestures(&self) -> [Option<usize>; NUM_CHANNELS] {
         let seen = self.seen();
         std::array::from_fn(|c| {
-            (0..NUM_GESTURES)
+            (0..G)
                 .filter_map(|g| {
                     let t = self.templates[g].as_ref()?;
                     let share = t[c] / dot(t, t, &seen).sqrt().max(1e-9);
@@ -565,10 +633,10 @@ impl GestureControl {
     }
 
     /// Power of each calibrated gesture in a (posture-corrected) sample.
-    fn fit(templates: &[Option<Features>; NUM_GESTURES], z: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; NUM_GESTURES] {
-        let idx: Vec<usize> = (0..NUM_GESTURES).filter(|&g| templates[g].is_some()).collect();
+    fn fit(templates: &[Option<Features>; G], z: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; G] {
+        let idx: Vec<usize> = (0..G).filter(|&g| templates[g].is_some()).collect();
         let patterns: Vec<&Features> = idx.iter().map(|&g| templates[g].as_ref().unwrap()).collect();
-        let mut out = [0.0; NUM_GESTURES];
+        let mut out = [0.0; G];
         for (k, w) in Self::fit_patterns(&patterns, z, usable, GESTURE_RIDGE).into_iter().enumerate() {
             out[idx[k]] = w;
         }
@@ -621,7 +689,7 @@ impl GestureControl {
     }
 
     /// Each gesture's noise floor for the current posture.
-    fn blend_stasis(&self) -> [f64; NUM_GESTURES] {
+    fn blend_stasis(&self) -> [f64; G] {
         if self.stasis_by.is_empty() {
             return self.stasis;
         }
@@ -681,7 +749,7 @@ impl GestureControl {
             }
             self.update_compound();
             let decodable = self.decodable();
-            for g in 0..NUM_GESTURES {
+            for g in 0..G {
                 if decodable[g] {
                     self.update_active(g);
                 } else {
@@ -705,7 +773,7 @@ impl GestureControl {
     /// stronger one's crosstalk by COMPOUND_EXIT_SIGMAS; a new pair needs the
     /// runner-up at COMPOUND_SIGMAS for COMPOUND_COMMIT_S.
     fn update_compound(&mut self) {
-        let mut order: Vec<usize> = (0..NUM_GESTURES).filter(|&g| self.templates[g].is_some()).collect();
+        let mut order: Vec<usize> = (0..G).filter(|&g| self.templates[g].is_some()).collect();
         order.sort_by(|&a, &b| self.power[b].total_cmp(&self.power[a]));
         let (Some(&best), Some(&runner)) = (order.first(), order.get(1)) else {
             self.compound = None;
@@ -732,9 +800,9 @@ impl GestureControl {
 
     /// The gestures allowed to drive this sample: the strongest, and its
     /// compound partner if there is one.
-    fn decodable(&self) -> [bool; NUM_GESTURES] {
-        let mut ok = [false; NUM_GESTURES];
-        let best = (0..NUM_GESTURES)
+    fn decodable(&self) -> [bool; G] {
+        let mut ok = [false; G];
+        let best = (0..G)
             .filter(|&g| self.templates[g].is_some())
             .max_by(|&a, &b| self.power[a].total_cmp(&self.power[b]));
         if let Some(best) = best {
@@ -755,8 +823,8 @@ impl GestureControl {
     fn update_coupling(&mut self) {
         let seen = self.seen();
         let alpha = 1.0 - (-1.0 / (POWER_TAU_S * SAMPLE_RATE) as f64).exp();
-        let smoothed = |rec: &[Features]| -> Vec<[f64; NUM_GESTURES]> {
-            let mut p = [0.0; NUM_GESTURES];
+        let smoothed = |rec: &[Features]| -> Vec<[f64; G]> {
+            let mut p = [0.0; G];
             rec.iter()
                 .enumerate()
                 .map(|(i, z)| {
@@ -768,16 +836,16 @@ impl GestureControl {
                 })
                 .collect()
         };
-        let mut c = [[(0.0, COUPLING_MIN_SD); NUM_GESTURES]; NUM_GESTURES];
-        for a in (0..NUM_GESTURES).filter(|&a| self.templates[a].is_some()) {
+        let mut c = [[(0.0, COUPLING_MIN_SD); G]; G];
+        for a in (0..G).filter(|&a| self.templates[a].is_some()) {
             let d = &self.data[a];
-            let fits: Vec<[f64; NUM_GESTURES]> =
+            let fits: Vec<[f64; G]> =
                 [&d.hard_rec, &d.medium, &d.faint].into_iter().flat_map(|rec| smoothed(rec)).collect();
             let saa: f64 = fits.iter().map(|w| w[a] * w[a]).sum();
             if fits.len() < 2 || saa < 1e-9 {
                 continue;
             }
-            for b in (0..NUM_GESTURES).filter(|&b| b != a) {
+            for b in (0..G).filter(|&b| b != a) {
                 let k = (fits.iter().map(|w| w[a] * w[b]).sum::<f64>() / saa).max(0.0);
                 let var = fits.iter().map(|w| (w[b] - k * w[a]).powi(2)).sum::<f64>() / (fits.len() - 1) as f64;
                 c[a][b] = (k, var.sqrt().max(COUPLING_MIN_SD));
@@ -814,13 +882,13 @@ impl GestureControl {
     fn update_inputs(&mut self) {
         self.inputs = [0.0; NUM_JOINTS];
         let gestures: Vec<usize> = match self.run.as_ref().map(|r| r.step) {
-            None => (0..NUM_GESTURES).collect(),
+            None => (0..G).collect(),
             // training: only the gesture being trained moves the arm
             Some(Step::Train(g)) => vec![g],
             Some(_) => Vec::new(),
         };
         for g in gestures.into_iter().filter(|&g| self.active[g]) {
-            let (axis, dir) = AXES[g];
+            let (axis, dir) = self.axes[g];
             self.inputs[axis] = (self.inputs[axis] + dir * self.speed(g) * self.gain).clamp(-1.0, 1.0);
         }
     }
@@ -829,12 +897,12 @@ impl GestureControl {
 
     /// Phase 1 for every gesture (rest in every posture first), then phase 2 if `train_after`.
     pub fn start_calibration(&mut self, train_after: bool) {
-        self.start(Step::Rest(0), (0..NUM_GESTURES).collect(), Vec::new(), train_after);
+        self.start(Step::Rest(0), (0..G).collect(), Vec::new(), train_after);
     }
 
     /// Phase 1 for one gesture, keeping the rest model (a full run if there is none).
     pub fn start_gesture(&mut self, gesture: usize, train_after: bool) {
-        if gesture >= NUM_GESTURES {
+        if gesture >= G {
             return;
         }
         if self.rest.is_none() {
@@ -846,7 +914,7 @@ impl GestureControl {
 
     /// Phase 2 only: every calibrated gesture.
     pub fn start_training(&mut self) {
-        let gestures: Vec<usize> = (0..NUM_GESTURES).filter(|&g| self.templates[g].is_some()).collect();
+        let gestures: Vec<usize> = (0..G).filter(|&g| self.templates[g].is_some()).collect();
         if let Some(&first) = gestures.first() {
             self.start(Step::Train(first), Vec::new(), gestures, false);
         }
@@ -944,7 +1012,7 @@ impl GestureControl {
     /// strongest such one, i.e. the gesture actually being made instead.
     fn stronger_gesture(&self, g: usize) -> Option<usize> {
         let p = self.power[g];
-        (0..NUM_GESTURES)
+        (0..G)
             .filter(|&h| h != g && self.templates[h].is_some() && self.power[h] > self.stasis[h].max(p))
             .max_by(|&a, &b| self.power[a].total_cmp(&self.power[b]))
     }
@@ -1191,10 +1259,10 @@ impl GestureControl {
             self.posture_rest = vec![z];
             self.posture_w.clear();
             self.z_slow = [0.0; NUM_CHANNELS];
-            self.templates = [None; NUM_GESTURES];
-            self.data = Default::default();
-            self.level = [LEVEL_MAX; NUM_GESTURES];
-            self.report = [GestureReport::default(); NUM_GESTURES];
+            self.templates = [None; G];
+            self.data = std::array::from_fn(|_| GestureData::default());
+            self.level = [LEVEL_MAX; G];
+            self.report = [GestureReport::default(); G];
             if seen.iter().filter(|&&s| s).count() < MIN_WORKING {
                 self.update_stasis();
                 return None;
@@ -1261,7 +1329,7 @@ impl GestureControl {
 
     /// The gesture whose pattern points most the same way as `shape`.
     fn closest_gesture(&self, shape: &Features, seen: &[bool; NUM_CHANNELS]) -> Option<usize> {
-        (0..NUM_GESTURES)
+        (0..G)
             .filter_map(|g| {
                 let t = self.templates[g].as_ref()?;
                 Some((g, dot(shape, t, seen) / dot(t, t, seen).sqrt().max(1e-9)))
@@ -1319,7 +1387,7 @@ impl GestureControl {
 
     /// Gesture powers over a recorded stretch of raw z, worked out the way the
     /// live decoder does: slow posture fit, posture taken out, gestures fitted.
-    fn replay(&self, seq: &[Features]) -> Vec<[f64; NUM_GESTURES]> {
+    fn replay(&self, seq: &[Features]) -> Vec<[f64; G]> {
         let seen = self.seen();
         let s = 1.0 - (-1.0 / (POSTURE_TAU_S * SAMPLE_RATE) as f64).exp();
         let mut slow = seq.first().copied().unwrap_or([0.0; NUM_CHANNELS]);
@@ -1366,11 +1434,11 @@ impl GestureControl {
             if self.templates[g].is_none() {
                 continue;
             }
-            let fits: Vec<[f64; NUM_GESTURES]> = self.data[g].faint.iter().map(|z| Self::fit(&self.templates, z, &seen)).collect();
+            let fits: Vec<[f64; G]> = self.data[g].faint.iter().map(|z| Self::fit(&self.templates, z, &seen)).collect();
             let faint = if fits.is_empty() { LEVEL_MAX } else { percentile(fits.iter().map(|w| w[g]).collect(), 0.5) };
             let on_top = fits
                 .iter()
-                .filter(|w| w[g] > self.stasis[g] && (0..NUM_GESTURES).all(|h| w[h] <= w[g]))
+                .filter(|w| w[g] > self.stasis[g] && (0..G).all(|h| w[h] <= w[g]))
                 .count();
             let (lo, hi) = self.level_limits(g);
             self.level[g] = faint.clamp(lo, hi);
@@ -1476,10 +1544,26 @@ mod tests {
         [1.8, 1.5, 2.7, 2.4, 1.5, 1.2, 0.9, 1.2],
     ];
 
+    /// Digit array, sites in channel order: flexors (thumb side → little-finger
+    /// side), extensors (same order), biceps, triceps. Each finger leans on its
+    /// own site but spills onto its neighbours, and flexing braces the
+    /// extensors a little (and the other way round).
+    const DIGIT_PATTERNS: [[f64; NUM_CHANNELS]; NUM_DIGITS] = [
+        [0.85, 0.35, 0.05, 0.15, 0.05, 0.0, 0.0, 0.0],
+        [0.1, 0.05, 0.0, 0.9, 0.35, 0.05, 0.0, 0.0],
+        [0.35, 0.9, 0.35, 0.05, 0.15, 0.05, 0.0, 0.0],
+        [0.05, 0.1, 0.05, 0.35, 0.9, 0.35, 0.0, 0.0],
+        [0.05, 0.35, 0.9, 0.0, 0.05, 0.15, 0.0, 0.0],
+        [0.0, 0.05, 0.1, 0.05, 0.35, 0.9, 0.0, 0.0],
+        [0.05, 0.1, 0.05, 0.05, 0.0, 0.0, 0.9, 0.1],
+        [0.0, 0.0, 0.0, 0.05, 0.05, 0.1, 0.15, 0.9],
+    ];
+
     /// A simulated user who follows the coach by watching its bar.
-    struct User {
+    struct User<const G: usize> {
         rng: u32,
-        drive: [f64; NUM_GESTURES],
+        patterns: &'static [[f64; NUM_CHANNELS]; G],
+        drive: [f64; G],
         /// Which site is wired to each channel (identity = in the order above).
         wiring: [usize; NUM_CHANNELS],
         posture: usize,
@@ -1487,17 +1571,29 @@ mod tests {
         floor: f64,
     }
 
-    impl User {
+    impl User<NUM_GESTURES> {
         fn new(seed: u32) -> Self {
-            Self { rng: seed, drive: [0.0; NUM_GESTURES], wiring: std::array::from_fn(|c| c), posture: 0, floor: 0.0 }
+            Self::with(seed, &PATTERNS)
+        }
+    }
+
+    impl User<NUM_DIGITS> {
+        fn digits(seed: u32) -> Self {
+            Self::with(seed, &DIGIT_PATTERNS)
+        }
+    }
+
+    impl<const G: usize> User<G> {
+        fn with(seed: u32, patterns: &'static [[f64; NUM_CHANNELS]; G]) -> Self {
+            Self { rng: seed, patterns, drive: [0.0; G], wiring: std::array::from_fn(|c| c), posture: 0, floor: 0.0 }
         }
 
-        fn step(&mut self, gc: &mut GestureControl) {
+        fn step(&mut self, gc: &mut GestureControl<G>) {
             let env = std::array::from_fn(|c| {
                 let site = self.wiring[c];
                 let base = 3.0 * (1.0 + 0.12 * noise(&mut self.rng));
                 let tone = TONE[self.posture][site] * (1.0 + 0.25 * noise(&mut self.rng));
-                let sig: f64 = (0..NUM_GESTURES).map(|g| self.drive[g] * PATTERNS[g][site]).sum();
+                let sig: f64 = (0..G).map(|g| self.drive[g] * self.patterns[g][site]).sum();
                 (base + tone + 40.0 * sig * (1.0 + 0.15 * noise(&mut self.rng))) as f32
             });
             gc.process(&env, &[true; NUM_CHANNELS]);
@@ -1505,11 +1601,11 @@ mod tests {
 
         fn steer(&mut self, g: usize, aim: f64, reading: f64, guess: f64) {
             let d = if self.drive[g] == 0.0 { guess } else { self.drive[g] };
-            self.drive = [0.0; NUM_GESTURES];
+            self.drive = [0.0; G];
             self.drive[g] = (d + 0.003 * (aim - reading)).clamp(0.001, 1.2);
         }
 
-        fn follow(&mut self, gc: &mut GestureControl) {
+        fn follow(&mut self, gc: &mut GestureControl<G>) {
             if gc.status().is_some_and(|s| s.waiting) {
                 gc.ready();
             }
@@ -1522,7 +1618,7 @@ mod tests {
                 Some(st) if st.phase == Phase::Record && !matches!(st.step, Step::Rest(_)) => {
                     let g = st.step.gesture().unwrap();
                     if st.meter_kind == Meter::Activity {
-                        self.drive = [0.0; NUM_GESTURES];
+                        self.drive = [0.0; G];
                         self.drive[g] = 1.0;
                     } else {
                         let aim = if st.aim.is_finite() { st.aim.max(self.floor) } else { (st.target.0 + st.target.1) / 2.0 };
@@ -1530,16 +1626,16 @@ mod tests {
                         self.steer(g, aim, st.meter, guess);
                     }
                 }
-                _ => self.drive = [0.0; NUM_GESTURES],
+                _ => self.drive = [0.0; G],
             }
             self.step(gc);
         }
 
         /// Hold gesture `g` at power `aim` for a while; the axis inputs at the end.
-        fn hold(&mut self, gc: &mut GestureControl, g: usize, aim: f64, seconds: f32) -> [f32; NUM_JOINTS] {
+        fn hold(&mut self, gc: &mut GestureControl<G>, g: usize, aim: f64, seconds: f32) -> [f32; NUM_JOINTS] {
             for _ in 0..samples(seconds) {
                 if aim <= 0.0 {
-                    self.drive = [0.0; NUM_GESTURES];
+                    self.drive = [0.0; G];
                 } else {
                     self.steer(g, aim, gc.powers()[g], aim * 0.2);
                 }
@@ -1549,8 +1645,11 @@ mod tests {
         }
     }
 
-    fn calibrated(mut u: User, train: bool) -> (GestureControl, User) {
-        let mut gc = GestureControl::new();
+    fn calibrated(u: User<NUM_GESTURES>, train: bool) -> (GestureControl<NUM_GESTURES>, User<NUM_GESTURES>) {
+        calibrated_with(GestureControl::muscle(), u, train)
+    }
+
+    fn calibrated_with<const G: usize>(mut gc: GestureControl<G>, mut u: User<G>, train: bool) -> (GestureControl<G>, User<G>) {
         for _ in 0..samples(2.0) {
             u.step(&mut gc);
         }
@@ -1566,12 +1665,12 @@ mod tests {
     }
 
     /// Each gesture held at its level drives only its own axis, in its direction.
-    fn assert_each_gesture_drives_its_axis(gc: &mut GestureControl, u: &mut User) {
-        for g in 0..NUM_GESTURES {
+    fn assert_each_gesture_drives_its_axis<const G: usize>(gc: &mut GestureControl<G>, u: &mut User<G>) {
+        for g in 0..G {
             u.hold(gc, g, 0.0, 1.0);
             let level = gc.bands(g).level;
             let inputs = u.hold(gc, g, level * 1.2, 1.5);
-            let (axis, dir) = AXES[g];
+            let (axis, dir) = gc.axes()[g];
             assert!(inputs[axis] * dir > 0.5, "gesture {g}: axis {axis} input {inputs:?}");
             for (a, &v) in inputs.iter().enumerate() {
                 if a != axis {
@@ -1649,7 +1748,7 @@ mod tests {
 
     #[test]
     fn only_the_trained_gesture_moves_the_arm_during_training() {
-        let mut gc = GestureControl::new();
+        let mut gc = GestureControl::muscle();
         let mut u = User::new(16);
         for _ in 0..samples(2.0) {
             u.step(&mut gc);
@@ -1676,7 +1775,7 @@ mod tests {
     fn saved_calibration_decodes_the_same_after_restore() {
         let (gc, mut u) = calibrated(User::new(17), true);
         let bytes = bincode::serialize(&gc.calibration()).unwrap();
-        let mut restored = GestureControl::new();
+        let mut restored = GestureControl::muscle();
         restored.restore(bincode::deserialize(&bytes).unwrap());
         let mut gc = gc;
         gc.reset_state();
@@ -1698,7 +1797,7 @@ mod tests {
 
     #[test]
     fn each_step_holds_until_ready_then_counts_down_and_records() {
-        let mut gc = GestureControl::new();
+        let mut gc = GestureControl::muscle();
         let mut u = User::new(19);
         gc.start_calibration(false);
         for _ in 0..samples(20.0) {
@@ -1722,7 +1821,7 @@ mod tests {
 
     /// Hold these gestures together at a fixed drive; the axis inputs at the end,
     /// and the most gestures that were active at once along the way.
-    fn hold_together(gc: &mut GestureControl, u: &mut User, gestures: &[usize], drive: f64, seconds: f32) -> ([f32; NUM_JOINTS], usize) {
+    fn hold_together(gc: &mut GestureControl<NUM_GESTURES>, u: &mut User<NUM_GESTURES>, gestures: &[usize], drive: f64, seconds: f32) -> ([f32; NUM_JOINTS], usize) {
         let mut most = 0;
         for _ in 0..samples(seconds) {
             u.drive = [0.0; NUM_GESTURES];
@@ -1760,13 +1859,13 @@ mod tests {
 
     #[test]
     fn a_compound_needs_a_moment_to_join_and_holds_through_a_dip() {
-        let mut gc = GestureControl::new();
+        let mut gc = GestureControl::muscle();
         gc.templates[0] = Some([1.0; NUM_CHANNELS]);
         gc.templates[1] = Some([1.0; NUM_CHANNELS]);
         // gesture 1 reads 0.2 × gesture 0 when only 0 is made, give or take 0.05
         gc.coupling[0][1] = (0.2, 0.05);
         gc.coupling[1][0] = (0.2, 0.05);
-        let hold = |gc: &mut GestureControl, p0: f64, p1: f64, s: f32| {
+        let hold = |gc: &mut GestureControl<NUM_GESTURES>, p0: f64, p1: f64, s: f32| {
             for _ in 0..samples(s) {
                 gc.power = [0.0; NUM_GESTURES];
                 gc.power[0] = p0;
@@ -1802,5 +1901,50 @@ mod tests {
         for g in (0..NUM_GESTURES).filter(|&g| g != 2) {
             assert_eq!(gc.templates[g], before[g], "gesture {g} untouched");
         }
+    }
+
+    #[test]
+    fn digit_array_learns_every_movement_and_each_drives_only_its_axis() {
+        let (mut gc, mut u) = calibrated_with(GestureControl::digits(), User::digits(31), false);
+        assert!(gc.calibrated());
+        for (g, r) in gc.report().iter().enumerate() {
+            assert!(r.calibrated && r.isolation > 0.6, "movement {g}: {r:?}");
+        }
+        assert_each_gesture_drives_its_axis(&mut gc, &mut u);
+    }
+
+    #[test]
+    fn digit_array_flex_and_extend_drive_opposite_ways() {
+        let (mut gc, mut u) = calibrated_with(GestureControl::digits(), User::digits(32), false);
+        // thumb: gripper close then open; index: tip down then up; ring + little: base − then +
+        for (flex, ext, axis) in [(0, 1, 3), (2, 3, 2), (4, 5, 0)] {
+            u.hold(&mut gc, flex, 0.0, 1.0);
+            let aim = gc.bands(flex).level * 1.2;
+            let a = u.hold(&mut gc, flex, aim, 1.5)[axis];
+            u.hold(&mut gc, ext, 0.0, 1.0);
+            let aim = gc.bands(ext).level * 1.2;
+            let b = u.hold(&mut gc, ext, aim, 1.5)[axis];
+            assert!(a * b < 0.0 && a.abs() > 0.5 && b.abs() > 0.5, "axis {axis}: flex {a}, extend {b}");
+        }
+        assert_eq!(DIGIT_AXES[0], (3, -1.0), "thumb flex closes the gripper");
+    }
+
+    #[test]
+    fn digit_calibration_survives_save_and_restore() {
+        let (gc, _) = calibrated_with(GestureControl::digits(), User::digits(33), false);
+        let bytes = bincode::serialize(&gc.calibration()).unwrap();
+        let mut restored = GestureControl::digits();
+        restored.restore(bincode::deserialize(&bytes).unwrap());
+        assert!(restored.calibrated());
+        assert_eq!(restored.templates, gc.templates);
+    }
+
+    #[test]
+    fn calibration_saves_arrays_as_plain_tuples() {
+        // the layout muscle-pair calibrations were saved in before the control was generic
+        let (gc, _) = calibrated(User::new(34), false);
+        let generic = bincode::serialize(&gc.calibration()).unwrap();
+        let plain = bincode::serialize(&(&gc.rest, &gc.postures, &gc.posture_rest, &gc.data, &gc.templates, &gc.level, &gc.report)).unwrap();
+        assert_eq!(generic, plain);
     }
 }

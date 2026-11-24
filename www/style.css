@@ -46,7 +46,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; }
 #gain-field > span:first-child { font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 #gain { writing-mode: vertical-lr; direction: rtl; flex: 1; width: 18px; min-height: 80px; }
 #gain-val { color: var(--text); }
-body.fingers #gain-field { display: none; }
 
 #estop {
   position: absolute; right: 18px; bottom: 18px; z-index: 6; width: 96px; height: 96px;
@@ -143,10 +142,15 @@ summary.spark-head > span:first-child::before {
 .field span { width: 3.5em; text-align: right; }
 
 /* channels */
-/* 4 rows × 2: muscle pairs fill row by row (each row a joint's +/− pair);
-   the finger grid fills column by column (upper row CH1–4, middle row CH5–8) */
+/* 4 rows × 2: muscle pairs fill row by row (each row a joint's +/− pair); the
+   digit array puts flexors (CH1–3) left of their extensors (CH4–6), then CH7, CH8 */
 #channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
-body.fingers #channels { grid-auto-flow: column; grid-template-rows: repeat(4, auto); }
+body.digit #channels .chan:nth-child(2) { order: 3; }
+body.digit #channels .chan:nth-child(3) { order: 5; }
+body.digit #channels .chan:nth-child(4) { order: 2; }
+body.digit #channels .chan:nth-child(5) { order: 4; }
+body.digit #channels .chan:nth-child(6) { order: 6; }
+body.digit #channels .chan:nth-child(n+7) { order: 7; }
 .chan { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11px; }
 .chan-top, .chan-mid { display: flex; justify-content: space-between; align-items: center; gap: 6px; min-height: 18px; }
 .chan-top .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -228,12 +232,12 @@ kbd {
 #coach .card.hold { --phase: #4fd18b; }
 #coach .card.done { --phase: var(--accent); }
 
-/* control scheme: muscle pairs vs finger grid */
-body.fingers .muscle-only, body:not(.fingers) .finger-only { display: none; }
+/* control scheme: muscle pairs vs digit array */
+body.digit .muscle-only, body:not(.digit) .digit-only { display: none; }
 .check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin-top: 10px; cursor: pointer; }
 .check small { flex-basis: 100%; padding-left: 20px; color: var(--muted); font-size: 11px; }
 
-/* finger power bar: zones (rest, faint −, firmer +, over the ceiling), target box, live marker */
+/* power bar: zones (rest, faint −, firmer +, over the ceiling), target box, live marker */
 .ftrack { position: relative; height: 12px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .ftrack.big { height: 26px; border-radius: 6px; }
 .ftrack .zone { position: absolute; top: 0; bottom: 0; }
@@ -251,22 +255,10 @@ body.fingers .muscle-only, body:not(.fingers) .finger-only { display: none; }
 #fbar-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
 #fbar-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 
-body.fingers .chan button { visibility: hidden; }
-.finger { display: grid; grid-template-columns: 92px 1fr 50px 40px; gap: 4px 8px; align-items: center; margin: 8px 0; }
-.finger .name { font-weight: 500; }
-.finger .name small { display: block; color: var(--muted); font-weight: 400; font-size: 10px; }
-.finger select { font-size: 11px; padding: 1px 4px; }
-.finger .state { text-align: right; font-size: 11px; color: var(--muted); }
-.finger .state.minus { color: #6fb3ff; }
-.finger .state.plus { color: #4fd18b; }
-.finger .state.over { color: var(--bad); }
-.finger .ftrack { grid-column: 1 / 5; }
-.finger.uncal { opacity: .55; }
 
 #coach .card.faint { --phase: #6fb3ff; }
 #coach .card.firm { --phase: #4fd18b; }
 #coach .card.real { --phase: var(--orange); }
-#coach-results .res.fres { grid-template-columns: 1fr 58px 58px 70px 70px 64px; }
 #coach-results .res.gres { grid-template-columns: 1fr 52px 64px 74px 52px 46px; }
 
 /* phase 2 trainer: small meter over the 3D view. Centre line = the target;
@@ -309,3 +301,11 @@ body.fingers .chan button { visibility: hidden; }
 #guide-gate { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
 #guide-gate[hidden] { display: none; }
 #guide-gate button { padding: 8px 22px; font-size: 14px; }
+
+/* run name: asked before every calibration run */
+#run-name { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; width: min(420px, 92vw); box-shadow: 0 10px 40px #000a; }
+#run-name::backdrop { background: #0009; }
+#run-name h2 { margin: 0 0 6px; font-size: 15px; }
+#run-name input { width: 100%; box-sizing: border-box; margin: 8px 0 2px; padding: 7px 9px; font-size: 14px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+#run-name .row { justify-content: flex-end; margin-top: 10px; }
+#run-name .bad { color: var(--bad); min-height: 1em; }

@@ -9,18 +9,25 @@
 const CROSSTALK = [[2, 0.6], [5, 0.4]];
 
 /**
- * Finger grid: share of each finger's activity on each site (upper row from the
- * thumb side to the pinky side, then the middle row), overlapping like real
- * forearm flexors. Thumb, index, middle, ring + little.
+ * Digit array (bipolar pairs, in channel order: flexors from the thumb side to
+ * the little-finger side, extensors in the same order, biceps, triceps): each
+ * movement's share of activity on each pair. Each finger leans on its own site
+ * but spills onto its neighbours, and flexing braces the extensors a little
+ * (and the other way round). Thumb flex / extend, index flex / extend,
+ * ring + little flex / extend, bicep, tricep (as in gesture.rs's tests).
  */
-const FINGER_PATTERNS = [
-  [0.15, 0.05, 0.0, 0.0, 0.9, 0.35, 0.05, 0.0],
-  [0.6, 0.85, 0.25, 0.0, 0.3, 0.55, 0.15, 0.0],
-  [0.1, 0.45, 0.85, 0.25, 0.0, 0.3, 0.8, 0.2],
-  [0.0, 0.1, 0.4, 0.9, 0.0, 0.05, 0.35, 0.85],
+export const DIGIT_PATTERNS = [
+  [0.85, 0.35, 0.05, 0.15, 0.05, 0.0, 0.0, 0.0],
+  [0.1, 0.05, 0.0, 0.9, 0.35, 0.05, 0.0, 0.0],
+  [0.35, 0.9, 0.35, 0.05, 0.15, 0.05, 0.0, 0.0],
+  [0.05, 0.1, 0.05, 0.35, 0.9, 0.35, 0.0, 0.0],
+  [0.05, 0.35, 0.9, 0.0, 0.05, 0.15, 0.0, 0.0],
+  [0.0, 0.05, 0.1, 0.05, 0.35, 0.9, 0.0, 0.0],
+  [0.05, 0.1, 0.05, 0.05, 0.0, 0.0, 0.9, 0.1],
+  [0.0, 0.0, 0.0, 0.05, 0.05, 0.1, 0.15, 0.9],
 ];
 
-/** Resting tone on each grid site in each arm posture: limp, forearm raised, arm held up. */
+/** Resting tone on each channel in each arm posture: limp, forearm raised, arm held up. */
 const POSTURE_TONE = [
   [0, 0, 0, 0, 0, 0, 0, 0],
   [0.035, 0.014, 0.007, 0.021, 0.028, 0.011, 0.007, 0.014],
@@ -37,13 +44,19 @@ function gauss() {
 }
 
 export class CytonSimulator {
-  /** differential: electrode pairs, which cancel the hum and noise common to every channel. */
-  constructor({ differential = false } = {}) {
+  /**
+   * differential: electrode pairs, which cancel the hum and noise common to every channel.
+   * crosstalk: a channel's contraction bleeds onto two other electrodes (single-ended sites).
+   * patterns: per movement, its share on each channel (setPatternLevel drives them).
+   */
+  constructor({ differential = false, crosstalk = true, patterns = [] } = {}) {
     this.differential = differential;
+    this.crosstalk = crosstalk ? CROSSTALK : [];
+    this.patterns = patterns;
     this.target = new Float32Array(8);
     this.level = new Float32Array(8);
-    this.fingerTarget = new Float32Array(FINGER_PATTERNS.length);
-    this.fingerLevel = new Float32Array(FINGER_PATTERNS.length);
+    this.patternTarget = new Float32Array(patterns.length);
+    this.patternLevel = new Float32Array(patterns.length);
     this.posture = 0;
     this.tone = new Float32Array(8);
     this.offset = Array.from({ length: 8 }, () => (Math.random() - 0.5) * 20000);
@@ -57,9 +70,9 @@ export class CytonSimulator {
     this.target[ch] = value;
   }
 
-  /** Finger tension 0..1 (1 = a hard flex) on the finger grid. */
-  setFingerLevel(finger, value) {
-    this.fingerTarget[finger] = value;
+  /** Tension 0..1 (1 = hard) of one of the patterns given to the constructor. */
+  setPatternLevel(i, value) {
+    this.patternTarget[i] = value;
   }
 
   /** Arm posture: 0 limp, 1 forearm raised, 2 arm held up (adds resting tone). */
@@ -89,11 +102,11 @@ export class CytonSimulator {
       for (let k = 0; k < 8; k++) {
         this.level[k] += (this.target[k] - this.level[k]) * 0.04;
         drive[k] += this.level[k];
-        for (const [offset, gain] of CROSSTALK) drive[(k + offset) % 8] += gain * this.level[k];
+        for (const [offset, gain] of this.crosstalk) drive[(k + offset) % 8] += gain * this.level[k];
       }
-      FINGER_PATTERNS.forEach((pattern, f) => {
-        this.fingerLevel[f] += (this.fingerTarget[f] - this.fingerLevel[f]) * 0.04;
-        pattern.forEach((share, ch) => { drive[ch] += share * this.fingerLevel[f]; });
+      this.patterns.forEach((pattern, m) => {
+        this.patternLevel[m] += (this.patternTarget[m] - this.patternLevel[m]) * 0.04;
+        pattern.forEach((share, ch) => { drive[ch] += share * this.patternLevel[m]; });
       });
       // moving the arm into a posture takes a moment too
       POSTURE_TONE[this.posture].forEach((v, ch) => {

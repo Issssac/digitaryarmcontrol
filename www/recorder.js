@@ -1,18 +1,26 @@
-// Records every calibration run to disk through serve.py (recordings/<id>/):
-//   meta.json     what was run, from which source, with which settings and prior calibration
+// Records every calibration run to disk through serve.py (recordings/<id>/, the
+// id being <yyyymmdd-hhmmss>-<4 random>-<the run's name, slugged>):
+//   meta.json     the run's name and what was run: scheme, wiring, filter chain,
+//                 electrode placement, movements and the axes they drive, source,
+//                 settings, prior calibration
 //   raw.bin       every byte the board sent during the run, exactly as the parser got it
-//   events.jsonl  the coach's status on every change and 10× a second, plus user actions
+//   events.jsonl  the coach's status on every change and 10× a second (with the
+//                 envelopes, decoder outputs and arm angles), plus user actions
 //   result.json   how it ended, the report, the resulting calibration (base64)
-//   samples.csv   raw.bin decoded by the server: one row per Cyton packet, µV per channel
+//   samples.csv   raw.bin decoded by the server: one row per Cyton packet, µV per
+//                 channel, labelled with the calibration step, movement and phase
 // Uploads are queued in order and flushed every second, so a crash loses at most that.
 
 const FLUSH_MS = 1000;
 
-const newId = () => {
+/** "Andy right arm #2" → "andy-right-arm-2". */
+const slug = (name) => String(name ?? '').toLowerCase().replace(/[^0-9a-z]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+
+const newId = (name) => {
   const d = new Date();
   const p = (n, w = 2) => String(n).padStart(w, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-    + `-${Math.random().toString(36).slice(2, 6)}`;
+    + `-${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}${slug(name) ? `-${slug(name)}` : ''}`;
 };
 
 export class CalibrationRecorder {
@@ -34,7 +42,7 @@ export class CalibrationRecorder {
 
   start(meta) {
     if (this.active) this.finish({ outcome: 'superseded' });
-    this.id = newId();
+    this.id = newId(meta.name);
     this.t0 = performance.now();
     this.p0 = this.packets();
     this.failed = false;

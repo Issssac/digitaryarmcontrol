@@ -21,7 +21,7 @@
       <!-- joint control: hold + or − to move; the angle above, and the real arm's while engaged -->
       <div id="manual">
         <div id="jgrid"></div>
-        <label class="muscle-only" id="gain-field" title="EMG gain: how far a contraction drives its joint">
+        <label id="gain-field" title="EMG gain: how far a contraction drives its joint">
           <span>Gain</span>
           <input type="range" id="gain" min="0.2" max="3" step="0.05" value="1">
           <span id="gain-val" class="mono"></span>
@@ -109,36 +109,22 @@
         <h2>Control scheme</h2>
         <select id="scheme" class="full">
           <option value="muscle" selected>Muscle pairs</option>
-          <option value="finger">Finger grid</option>
+          <option value="digit">Digit array (8 bipolar pairs)</option>
         </select>
         <!-- only when saving or loading the calibration fails -->
         <p class="hint" id="saved-status"></p>
       </section>
 
-      <section class="muscle-only">
+      <section>
         <h2>Calibration</h2>
+        <p class="hint digit-only">CH1–3 finger flexors, CH4–6 finger extensors (thumb side → little side), CH7 biceps, CH8 triceps, each a bipolar pair. Thumb → gripper, index → tip, ring + little → base, bicep / tricep → reach.</p>
         <div class="row">
-          <button id="gcal" class="primary" title="Rest in three positions, each gesture strong → half → faint, then training (about 6 minutes)">Calibrate + train</button>
-          <button id="gtrain" title="Practise every gesture again: the level steps down as you get consistent">Train only</button>
+          <button id="gcal" class="primary" title="Rest in three positions, each movement strong → half → faint, then training (about 6 minutes)">Calibrate + train</button>
+          <button id="gtrain" title="Practise every movement again: the level steps down as you get consistent">Train only</button>
           <button class="guide-open">Electrode guide</button>
         </div>
         <div class="cal-pill"><span id="cal-pill" class="pill warn">Uncalibrated</span></div>
         <div id="cal-status" class="hint"></div>
-      </section>
-
-      <section class="finger-only">
-        <h2>Finger control</h2>
-        <div class="row">
-          <button id="fcal" class="primary">Calibrate + train</button>
-          <button id="ftrain">Train only</button>
-          <button class="guide-open">Electrode guide</button>
-        </div>
-        <div class="cal-pill"><span id="fcal-pill" class="pill warn">Uncalibrated</span></div>
-        <div id="fcal-status" class="hint"></div>
-        <div id="fposture" class="kv mono"></div>
-        <label class="check"><input type="checkbox" id="fsimple" checked autocomplete="off"> Simple bands <small>rest under ¼ · − from ¼ to ½ · + over ½, no ceiling</small></label>
-        <div id="fingers"></div>
-        <label class="field">Speed <input type="range" id="fspeed" min="0.1" max="1" step="0.05" value="0.5"><span id="fspeed-val" class="mono"></span></label>
       </section>
 
       <section>
@@ -167,6 +153,20 @@
       </div>
     </figure>
   </div>
+  <!-- asked before every calibration run: names its recording (recordings/<time>-<name>/) -->
+  <dialog id="run-name">
+    <form id="run-name-form" method="dialog">
+      <h2>Name this run</h2>
+      <p class="hint" id="run-name-what"></p>
+      <input id="run-name-input" type="text" maxlength="60" autocomplete="off" placeholder="e.g. andy-right-arm-session-2" required>
+      <p class="hint">Saved with the recording, so the run can be found and used to train offline decoders.</p>
+      <p class="hint bad" id="run-name-error"></p>
+      <div class="row">
+        <button type="button" id="run-name-cancel">Cancel</button>
+        <button type="submit" class="primary">Start</button>
+      </div>
+    </form>
+  </dialog>
   <script type="module" src="main.js"></script>
 </body>
 </html>

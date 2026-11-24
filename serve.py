@@ -9,7 +9,8 @@ Every calibration run the page starts is recorded under recordings/<id>/
   POST /recordings/<id>/start    meta.json (what was run, settings, prior calibration)
   POST /recordings/<id>/raw      appends the board's raw bytes to raw.bin
   POST /recordings/<id>/events   appends JSON lines to events.jsonl
-  POST /recordings/<id>/finish   result.json, then raw.bin decoded to samples.csv
+  POST /recordings/<id>/finish   result.json, then raw.bin decoded to samples.csv,
+                                 each row labelled from events.jsonl (step, movement, phase…)
   GET  /recordings               index of all runs (recordings/index.jsonl)
   GET  /recordings/<id>/<file>   any of the files above
 
@@ -21,6 +22,7 @@ sends no CORS headers.
   /shield/stream                   the shield's raw TCP bytes, streamed as they arrive
 """
 import functools
+import os
 import http.server
 import json
 import queue
@@ -33,10 +35,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-TCP_PORT = 3000
+# the shield streams to this port; SHIELD_TCP_PORT moves it, e.g. for a second server
+TCP_PORT = int(os.environ.get('SHIELD_TCP_PORT', 3000))
 CALIBRATION = Path(__file__).parent / 'calibration.json'
 RECORDINGS = Path(__file__).parent / 'recordings'
-RECORDING_ID = re.compile(r'^[0-9A-Za-z_-]{1,64}$')
+RECORDING_ID = re.compile(r'^[0-9A-Za-z_-]{1,96}$')
 RECORDING_FILES = {'meta.json', 'raw.bin', 'events.jsonl', 'result.json', 'samples.csv'}
 recordings_lock = threading.Lock()
 
@@ -61,21 +64,76 @@ def decode_cyton(raw):
         i += PACKET_LEN
 
 
-def write_samples_csv(folder):
+# the coach's status vector (main.js STATUS_FIELDS) and its codes, for older runs whose meta lacks them
+STATUS_FIELDS = ['step', 'index', 'phase', 'progress', 'secondsLeft', 'check', 'arg', 'stuck', 'meterKind',
+                 'meter', 'lo', 'hi', 'segment', 'segments', 'round', 'rounds', 'goal', 'aim', 'posture', 'waiting']
+STEP_NAMES = ['rest', 'hard', 'medium', 'faint', 'train']
+PHASE_NAMES = ['prepare', 'record', 'relax']
+CHECK_NAMES = {-1: '', 0: 'clean', 1: 'no_contact', 2: 'moving', 3: 'weak', 4: 'strong', 5: 'other',
+               6: 'not_relaxed', 7: 'fainter'}
+LABEL_COLUMNS = ['step', 'step_name', 'movement', 'movement_name', 'phase', 'phase_name', 'check', 'check_name',
+                 'posture', 'round', 'recording', 'stalled']
+
+
+def status_labels(folder, meta):
+    """[(sample, label values)] from events.jsonl's status events, in sample order."""
+    path = folder / 'events.jsonl'
+    if not path.exists():
+        return []
+    fields = meta.get('statusFields') or STATUS_FIELDS
+    steps = meta.get('stepNames') or STEP_NAMES
+    phases = meta.get('phaseNames') or PHASE_NAMES
+    movements = [m.get('name', '') for m in meta.get('movements') or []]
+    postures = meta.get('postures') or []
+    at = {name: k for k, name in enumerate(fields)}
+    out = []
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get('type') != 'status' or not isinstance(ev.get('status'), list):
+            if ev.get('type') == 'end':
+                out.append((ev.get('sample', 0), ['', 'ended', '', '', '', '', '', '', '', '', 0, 0]))
+            continue
+        st = ev['status']
+        get = lambda name, default=-1: st[at[name]] if name in at and at[name] < len(st) and st[at[name]] is not None else default
+        step, index, phase, check = int(get('step')), int(get('index')), int(get('phase')), int(get('check'))
+        posture, rnd = int(get('posture')), int(get('round'))
+        name = lambda names, k: names[k] if 0 <= k < len(names) else ''
+        # recorded: the decoder is taking this window (rest, phase-1 rounds and training trials)
+        recording = 1 if phase == 1 and not ev.get('stalled') else 0
+        out.append((ev.get('sample', 0), [
+            step, name(steps, step), index, 'rest' if step == 0 else name(movements, index),
+            phase, name(phases, phase), check, CHECK_NAMES.get(check, ''),
+            name(postures, posture) if step == 0 else '', rnd, recording, int(bool(ev.get('stalled')))]))
+    out.sort(key=lambda e: e[0])
+    return out
+
+
+def write_samples_csv(folder, meta=None):
+    """raw.bin → samples.csv: one row per packet, µV per channel, and the coach's labels at that sample."""
     raw = (folder / 'raw.bin').read_bytes() if (folder / 'raw.bin').exists() else b''
+    labels = status_labels(folder, meta or {})
+    blank = [''] * len(LABEL_COLUMNS)
     rows = 0
     dropped = 0
     prev = None
+    k = -1  # the latest label at or before this row
     with open(folder / 'samples.csv', 'w', newline='') as f:
-        f.write('sample,t_s,seq,dropped_before,' + ','.join(f'ch{c + 1}_uV' for c in range(8)) + ',aux_hex,footer\n')
+        f.write('sample,t_s,seq,dropped_before,' + ','.join(f'ch{c + 1}_uV' for c in range(8))
+                + ',aux_hex,footer,' + ','.join(LABEL_COLUMNS) + '\n')
         for seq, chans, aux, footer in decode_cyton(raw):
             gap = 0 if prev is None else (seq - prev - 1) % 256
             dropped += gap
             prev = seq
+            while k + 1 < len(labels) and labels[k + 1][0] <= rows:
+                k += 1
+            label = labels[k][1] if k >= 0 else blank
             f.write(f'{rows},{rows / 250:.3f},{seq},{gap},' + ','.join(f'{v:.3f}' for v in chans)
-                    + f',{aux.hex()},{footer:#04x}\n')
+                    + f',{aux.hex()},{footer:#04x},' + ','.join(str(v) for v in label) + '\n')
             rows += 1
-    return {'bytes': len(raw), 'packets': rows, 'dropped': dropped}
+    return {'bytes': len(raw), 'packets': rows, 'dropped': dropped, 'labelled': bool(labels)}
 
 
 class Relay:
@@ -161,7 +219,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 folder.mkdir(parents=True, exist_ok=True)
                 (folder / 'meta.json').write_bytes(body)
                 meta = json.loads(body or b'{}')
-                print(f'Calibration recording {rid} started: {meta.get("kind")} {meta.get("mode")} from {meta.get("source")}')
+                print(f'Calibration recording {rid} started: "{meta.get("name")}" {meta.get("scheme") or meta.get("kind")} '
+                      f'{meta.get("mode")} from {meta.get("source")}')
                 return self.reply(204, b'')
             if not folder.is_dir():
                 return self.reply(404, b'no such recording')
@@ -174,10 +233,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     f.write(text)
             elif what == 'finish':
                 result = json.loads(body or b'{}')
-                result['decoded'] = write_samples_csv(folder)
-                (folder / 'result.json').write_text(json.dumps(result, indent=1))
                 meta = json.loads((folder / 'meta.json').read_bytes() or b'{}') if (folder / 'meta.json').exists() else {}
-                entry = {'id': rid, 'kind': meta.get('kind'), 'mode': meta.get('mode'), 'source': meta.get('source'),
+                result['decoded'] = write_samples_csv(folder, meta)
+                (folder / 'result.json').write_text(json.dumps(result, indent=1))
+                entry = {'id': rid, 'name': meta.get('name'), 'scheme': meta.get('scheme') or meta.get('kind'),
+                         'kind': meta.get('kind'), 'mode': meta.get('mode'), 'source': meta.get('source'),
+                         'wiring': meta.get('wiring'),
                          'startedAt': meta.get('startedAt'), 'endedAt': result.get('endedAt'),
                          'outcome': result.get('outcome'), 'durationMs': result.get('durationMs'), **result['decoded']}
                 with open(RECORDINGS / 'index.jsonl', 'a') as f:

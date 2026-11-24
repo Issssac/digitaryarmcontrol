@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1320 730" width="1320" height="730" font-family="system-ui, 'Segoe UI', sans-serif">
+  <title>Digit array: eight bipolar electrode pairs and Cyton wiring</title>
+  <defs>
+    <!-- arm silhouette in local coords: shoulder at top, lateral (thumb) side = -x -->
+    <path id="arm" d="M -35 0 C -62 5 -68 50 -62 85 C -58 120 -55 180 -52 230 C -51 245 -58 265 -62 290
+      C -64 330 -48 390 -36 440 L -38 455 C -58 470 -60 505 -48 515 C -40 520 -36 500 -32 490
+      C -34 520 -30 555 -10 565 C 5 570 20 568 30 555 C 38 530 36 480 32 445
+      C 40 400 55 330 54 290 C 54 265 50 248 48 235 C 50 180 48 130 40 95
+      C 38 60 30 10 0 -5 C -15 -8 -28 -4 -35 0 Z"/>
+    <g id="el">
+      <circle r="7" fill="#f2f3f5" stroke-width="2.5"/>
+      <circle r="2.3" fill="#8a8f98" stroke="none"/>
+    </g>
+  </defs>
+  <rect width="1320" height="730" fill="#1a1c21"/>
+  <text x="30" y="42" font-size="20" font-weight="600" fill="#e3e6eb">Digit array · right arm · 8 bipolar pairs</text>
+  <text x="30" y="64" font-size="12.5" fill="#8b919c">Each channel is a pair of electrodes about 2 cm apart along the muscle, plus one BIAS electrode on bone. No shared REF: SRB is unused. Mirror everything for the left arm.</text>
+  <text x="230" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">FRONT · PALM FORWARD</text>
+  <g transform="translate(230 110)"><use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/></g>
+  <text x="560" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">BACK</text>
+  <g transform="translate(560 110) scale(-1 1)"><use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/></g>
+  <line x1="208" y1="440" x2="206" y2="466" stroke="#ff9f43" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="208" y="440" stroke="#ff9f43"/><use href="#el" xlink:href="#el" x="206" y="466" stroke="#ff9f43"/>
+  <text x="164" y="457.0" font-size="12.5" font-weight="700" fill="#ff9f43" text-anchor="end">CH1</text>
+  <line x1="230" y1="428" x2="231" y2="454" stroke="#ffd166" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="230" y="428" stroke="#ffd166"/><use href="#el" xlink:href="#el" x="231" y="454" stroke="#ffd166"/>
+  <text x="231" y="420" font-size="12.5" font-weight="700" fill="#ffd166" text-anchor="middle">CH2</text>
+  <line x1="252" y1="436" x2="253" y2="462" stroke="#3ddc97" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="252" y="436" stroke="#3ddc97"/><use href="#el" xlink:href="#el" x="253" y="462" stroke="#3ddc97"/>
+  <text x="292" y="453.0" font-size="12.5" font-weight="700" fill="#3ddc97" text-anchor="start">CH3</text>
+  <line x1="582" y1="490" x2="584" y2="516" stroke="#ff9f43" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="582" y="490" stroke="#ff9f43"/><use href="#el" xlink:href="#el" x="584" y="516" stroke="#ff9f43"/>
+  <text x="622" y="507.0" font-size="12.5" font-weight="700" fill="#ff9f43" text-anchor="start">CH4</text>
+  <line x1="562" y1="432" x2="563" y2="458" stroke="#ffd166" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="562" y="432" stroke="#ffd166"/><use href="#el" xlink:href="#el" x="563" y="458" stroke="#ffd166"/>
+  <text x="602" y="449.0" font-size="12.5" font-weight="700" fill="#ffd166" text-anchor="start">CH5</text>
+  <line x1="540" y1="440" x2="538" y2="466" stroke="#3ddc97" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="540" y="440" stroke="#3ddc97"/><use href="#el" xlink:href="#el" x="538" y="466" stroke="#3ddc97"/>
+  <text x="496" y="457.0" font-size="12.5" font-weight="700" fill="#3ddc97" text-anchor="end">CH6</text>
+  <line x1="228" y1="250" x2="228" y2="286" stroke="#4da3ff" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="228" y="250" stroke="#4da3ff"/><use href="#el" xlink:href="#el" x="228" y="286" stroke="#4da3ff"/>
+  <text x="184" y="272.0" font-size="12.5" font-weight="700" fill="#4da3ff" text-anchor="end">CH7</text>
+  <line x1="560" y1="240" x2="560" y2="276" stroke="#b48cff" stroke-width="2" opacity=".7"/>
+  <use href="#el" xlink:href="#el" x="560" y="240" stroke="#b48cff"/><use href="#el" xlink:href="#el" x="560" y="276" stroke="#b48cff"/>
+  <text x="600" y="262.0" font-size="12.5" font-weight="700" fill="#b48cff" text-anchor="start">CH8</text>
+  <use href="#el" xlink:href="#el" x="530" y="372" stroke="#e3e6eb"/>
+  <text x="482" y="376" font-size="12.5" font-weight="700" fill="#e3e6eb" text-anchor="end">BIAS</text>
+  <text x="482" y="391" font-size="11" fill="#8b919c" text-anchor="end">elbow bone</text>
+  <text x="760" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CHANNEL · SITE · WHAT IT DRIVES</text>
+  <rect x="760" y="96" width="6" height="40" rx="2" fill="#ff9f43"/>
+  <text x="776" y="110" font-size="13.5" font-weight="600" fill="#e3e6eb">CH1 · Flexors · thumb side</text>
+  <text x="776" y="126" font-size="11.5" fill="#8b919c">palm side, a third of the way down from the elbow, toward the thumb edge</text>
+  <text x="776" y="141" font-size="11.5" fill="#ff9f43">Thumb flex → gripper close</text>
+  <rect x="760" y="152" width="6" height="40" rx="2" fill="#ffd166"/>
+  <text x="776" y="166" font-size="13.5" font-weight="600" fill="#e3e6eb">CH2 · Flexors · middle</text>
+  <text x="776" y="182" font-size="11.5" fill="#8b919c">palm side, centre of the forearm, a third of the way down</text>
+  <text x="776" y="197" font-size="11.5" fill="#ffd166">Index flex → tip down</text>
+  <rect x="760" y="208" width="6" height="40" rx="2" fill="#3ddc97"/>
+  <text x="776" y="222" font-size="13.5" font-weight="600" fill="#e3e6eb">CH3 · Flexors · little side</text>
+  <text x="776" y="238" font-size="11.5" fill="#8b919c">palm side, toward the little-finger edge, a third of the way down</text>
+  <text x="776" y="253" font-size="11.5" fill="#3ddc97">Ring + little flex → base −</text>
+  <rect x="760" y="264" width="6" height="40" rx="2" fill="#ff9f43"/>
+  <text x="776" y="278" font-size="13.5" font-weight="600" fill="#e3e6eb">CH4 · Extensors · thumb side</text>
+  <text x="776" y="294" font-size="11.5" fill="#8b919c">back of the forearm, lower half, toward the thumb edge</text>
+  <text x="776" y="309" font-size="11.5" fill="#ff9f43">Thumb extend → gripper open</text>
+  <rect x="760" y="320" width="6" height="40" rx="2" fill="#ffd166"/>
+  <text x="776" y="334" font-size="13.5" font-weight="600" fill="#e3e6eb">CH5 · Extensors · middle</text>
+  <text x="776" y="350" font-size="11.5" fill="#8b919c">back of the forearm, centre, a third of the way down</text>
+  <text x="776" y="365" font-size="11.5" fill="#ffd166">Index extend → tip up</text>
+  <rect x="760" y="376" width="6" height="40" rx="2" fill="#3ddc97"/>
+  <text x="776" y="390" font-size="13.5" font-weight="600" fill="#e3e6eb">CH6 · Extensors · little side</text>
+  <text x="776" y="406" font-size="11.5" fill="#8b919c">back of the forearm, toward the little-finger edge, a third of the way down</text>
+  <text x="776" y="421" font-size="11.5" fill="#3ddc97">Ring + little extend → base +</text>
+  <rect x="760" y="432" width="6" height="40" rx="2" fill="#4da3ff"/>
+  <text x="776" y="446" font-size="13.5" font-weight="600" fill="#e3e6eb">CH7 · Biceps</text>
+  <text x="776" y="462" font-size="11.5" fill="#8b919c">front of the upper arm, centre of the biceps belly</text>
+  <text x="776" y="477" font-size="11.5" fill="#4da3ff">Bicep → reach in</text>
+  <rect x="760" y="488" width="6" height="40" rx="2" fill="#b48cff"/>
+  <text x="776" y="502" font-size="13.5" font-weight="600" fill="#e3e6eb">CH8 · Triceps</text>
+  <text x="776" y="518" font-size="11.5" fill="#8b919c">back of the upper arm, centre of the triceps</text>
+  <text x="776" y="533" font-size="11.5" fill="#b48cff">Tricep → reach out</text>
+  <text x="760" y="564" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CYTON WIRING</text>
+  <text x="760" y="584" font-size="12" fill="#c9ced6">Each channel: one electrode of its pair on the top pin (P), the other on the bottom pin (N).</text>
+  <text x="760" y="601" font-size="12" fill="#c9ced6">BIAS pin → the electrode on the elbow bone. SRB pins: nothing.</text>
+  <text x="760" y="618" font-size="12" fill="#c9ced6">Connect from the page with Digit array selected: it sets the board to bipolar (SRB2 off).</text>
+  <text x="760" y="635" font-size="12" fill="#c9ced6">In each pair, put the electrode nearer the elbow on N and the one nearer the wrist on P (either way works; keep it the same every time).</text>
+</svg>

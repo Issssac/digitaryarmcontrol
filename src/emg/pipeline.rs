@@ -1,5 +1,5 @@
 //! Raw µV samples → per-channel EMG envelope, the input both control schemes
-//! decode (gesture.rs for muscle pairs, finger.rs for the finger grid).
+//! decode (gesture.rs, for muscle pairs and the digit array).
 //!
 //! Per sample: 20 Hz high-pass on every channel → common-average reference
 //! (subtract the mean of the channels that have skin contact; this cancels the

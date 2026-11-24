@@ -1,6 +1,6 @@
 import init, { App } from './pkg/arm_sim.js';
 import { CytonSerial } from './serial.js';
-import { CytonSimulator } from './simulator.js';
+import { CytonSimulator, DIGIT_PATTERNS } from './simulator.js';
 import { RoArm, SERVOS_DOWN } from './roarm.js';
 import { CalibrationRecorder } from './recorder.js';
 
@@ -33,18 +33,22 @@ const SIM_LEVEL = 0.7;
 const SIM_PULSE = 0.5;
 const UI_INTERVAL_MS = 66;
 
-// Finger grid (see finger-grid.svg): CH1–4 in the upper row, about a quarter of
-// the way from the elbow crease to the wrist, CH5–8 in the middle row, about
-// halfway. The order within a row doesn't matter: calibration learns each
-// finger's pattern from whatever site ends up on which channel.
-const GRID = [...Array(4).fill('Upper row'), ...Array(4).fill('Middle row')];
-const FINGERS = [
-  { name: 'Thumb', the: 'your thumb', how: 'bend its tip toward the palm' },
-  { name: 'Index', the: 'your index finger', how: 'curl it toward the palm' },
-  { name: 'Middle', the: 'your middle finger', how: 'curl it toward the palm' },
-  { name: 'Ring + little', the: 'your ring and little fingers', how: 'curl both together' },
+// Digit array (see digit-array.svg): eight bipolar pairs. CH1–3 on the finger
+// flexors and CH4–6 on the finger extensors, each from the thumb side to the
+// little-finger side, CH7 on the biceps, CH8 on the triceps. Movements in the
+// decoder's order (DIGIT_AXES in gesture.rs for the axis each drives).
+const DIGIT_SITES = ['Flexors · thumb side', 'Flexors · middle', 'Flexors · little side',
+  'Extensors · thumb side', 'Extensors · middle', 'Extensors · little side', 'Biceps', 'Triceps'];
+const DIGITS = [
+  { short: 'Thumb flex', cue: 'Flex your thumb', how: 'bend the thumb tip in toward your palm' },
+  { short: 'Thumb extend', cue: 'Lift your thumb out', how: 'straighten the thumb back, away from the palm' },
+  { short: 'Index flex', cue: 'Curl your index finger', how: 'bend it toward the palm, the other fingers loose' },
+  { short: 'Index extend', cue: 'Lift your index finger', how: 'straighten it up and back, the other fingers loose' },
+  { short: 'Ring + little flex', cue: 'Curl your ring and little fingers', how: 'bend both toward the palm together' },
+  { short: 'Ring + little extend', cue: 'Lift your ring and little fingers', how: 'straighten both up and back together' },
+  { short: 'Bicep', cue: 'Bicep curl', how: 'palm up, as if lifting a cup', anim: 'gesture-bicep.svg' },
+  { short: 'Tricep', cue: 'Straighten your arm', how: 'as if pressing your forearm down into the table', anim: 'gesture-tricep.svg' },
 ];
-const NUM_FINGERS = FINGERS.length;
 // Rest postures recorded in calibration, so a raised arm isn't read as finger tension.
 const POSTURES = [
   { name: 'limp', title: 'Relax your whole hand', place: 'Forearm resting on the table, palm up, fingers loose, hands off the keyboard.', img: 'posture-limp.svg' },
@@ -53,18 +57,19 @@ const POSTURES = [
 ];
 // Simulator only: the arm posture to fake when no calibration is cueing one (keys 1/2/3).
 let simPosture = 0;
-// finger_states() / goal codes
-const BAND = { REST: 0, PENDING: 1, MINUS: 2, PLUS: 3, OVER: 4 };
-// finger_status() codes
+// gesture_status() codes
 const FSTEP = { REST: 0, HARD: 1, MEDIUM: 2, FAINT: 3, TRAIN: 4 };
 const FCHECK = { NONE: -1, CLEAN: 0, NO_CONTACT: 1, MOVING: 2, WEAK: 3, STRONG: 4, OTHER: 5, NOT_RELAXED: 6, FAINTER: 7 };
 /** On-screen meters are averaged over about this long, so they don't jitter. */
 const DISPLAY_TAU_S = 0.25;
 const FMETER = { ACTIVITY: 0, OF_HARD: 1, POWER: 2, STILL: 3 };
-/** Finger bars run from rest (0) past the ceiling (1) to this. */
+/** Power bars run from rest (0) past the ceiling (1) to this. */
 const POWER_MAX = 1.25;
 
-let scheme = 'muscle';
+let scheme = 'muscle'; // or 'digit'
+const isDigit = () => scheme === 'digit';
+/** The current scheme's movements, in the decoder's order. */
+const moves = () => (isDigit() ? DIGITS : GESTURES);
 
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d = 1) => (v >= 0 ? '+' : '') + v.toFixed(d);
@@ -138,8 +143,8 @@ function setSource(src) {
   if (src === 'emg') requireStream(); // clears a "connect first" warning
   $('source-hint').textContent = src !== 'emg'
     ? ''
-    : scheme === 'finger'
-      ? 'Arm follows finger tension. With Simulate on, A/W/F = firmer (+) and D/S/R = faint (−) on the finger driving that joint (Shift = a real movement); 1/2/3 = arm limp / forearm raised / arm up. Gripper: Q / E.'
+    : isDigit()
+      ? 'Arm follows the digit array: thumb flex/extend closes/opens the gripper, index flex/extend tips it down/up, ring + little flex/extend turn the base, bicep/tricep reach in/out. With Simulate on: A/D base, W/S reach out/in, F/R tip, Q/E gripper (Shift = full).'
       : 'Arm follows your gestures: wrist back/curl aim the elbow, tricep/bicep reach out/in along the gripper, and it closes while you grip. With Simulate on: A/D base, W/S reach out/in, F/R elbow, E grip (Shift = full).';
 }
 
@@ -152,7 +157,7 @@ const ALL_KEYS = KEYS.flat();
 // Space is the emergency stop, wherever focus is. Captured and cancelled on both
 // key events, so it can't also press a focused button (Engage among them).
 addEventListener('keydown', (e) => {
-  if (e.key !== ' ') return;
+  if (e.key !== ' ' || e.target.tagName === 'INPUT') return; // a space in the run name is just a space
   e.preventDefault();
   e.stopImmediatePropagation();
   if (e.repeat) return;
@@ -160,12 +165,12 @@ addEventListener('keydown', (e) => {
   coachReady();
 }, { capture: true });
 addEventListener('keyup', (e) => {
-  if (e.key === ' ') e.preventDefault();
+  if (e.key === ' ' && e.target.tagName !== 'INPUT') e.preventDefault();
 }, { capture: true });
 
 addEventListener('keydown', (e) => {
   shift = e.shiftKey;
-  if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey || ['SELECT', 'INPUT'].includes(e.target.tagName)) return;
   const k = e.key.toLowerCase();
   if (['1', '2', '3'].includes(k)) simPosture = Number(k) - 1; // simulated arm posture
   if (ALL_KEYS.includes(k)) {
@@ -248,11 +253,12 @@ $('drift').onclick = () => {
 
 // ---- mapping ---------------------------------------------------------------
 
-/** [axis, direction] per gesture, fixed in gesture.rs. */
-const GESTURE_AXES = (() => {
-  const v = app.gesture_axes();
-  return GESTURES.map((_, g) => [v[2 * g], v[2 * g + 1]]);
-})();
+/** [axis, direction] per movement of each scheme, fixed in gesture.rs. */
+const SCHEME_AXES = Object.fromEntries([['muscle', false], ['digit', true]].map(([name, digit]) => {
+  const v = app.scheme_axes(digit);
+  return [name, Array.from({ length: v.length / 2 }, (_, g) => [v[2 * g], v[2 * g + 1]])];
+}));
+const axesOf = () => SCHEME_AXES[scheme];
 
 function bindRange(id, setter, digits) {
   const input = $(id);
@@ -264,41 +270,17 @@ function bindRange(id, setter, digits) {
   input.addEventListener('input', apply);
   apply();
 }
-/** "Elbow +", "Reach out", "Gripper close" etc.: what a gesture drives. */
+/** "Elbow +", "Reach out", "Gripper close" etc.: what a movement drives. */
 function jointFor(g) {
-  const [j, d] = GESTURE_AXES[g];
+  const [j, d] = axesOf()[g];
   const plus = d > 0;
-  const dir = j === GRIPPER ? (plus ? 'open' : 'close') : j === 1 ? (plus ? 'out' : 'in') : plus ? '+' : '−';
+  const dir = j === GRIPPER ? (plus ? 'open' : 'close') : j === 1 ? (plus ? 'out' : 'in')
+    : j === 2 && isDigit() ? (plus ? '+ (tip down)' : '− (tip up)') : plus ? '+' : '−';
   return `${AXES[j]} ${dir}`;
-}
-
-function drawFingerIntent(el) {
-  el.hidden = !(source === 'emg' && app.finger_trained());
-  if (el.hidden) return;
-  const states = app.finger_states();
-  const joints = app.finger_joints();
-  const powers = app.finger_powers();
-  const over = states.includes(BAND.OVER);
-  const active = FINGERS.map((_, f) => f).filter((f) => states[f] === BAND.MINUS || states[f] === BAND.PLUS);
-  const plus = (f) => states[f] === BAND.PLUS;
-  el.classList.toggle('active', active.length > 0 && !over);
-  el.querySelector('.what').textContent = over
-    ? 'Hand moved: holding'
-    : active.length ? active.map((f) => `${FINGERS[f].name} ${plus(f) ? 'firm' : 'faint'}`).join(' + ') : 'Relaxed';
-  const pose = postureText(app.finger_posture());
-  el.querySelector('.where').textContent = (over
-    ? 'a finger crossed its ceiling, so every joint holds'
-    : active.length ? active.map((f) => `${jointName(joints[f])} ${plus(f) ? '+' : '−'}`).join(' · ') : 'no finger past its rest band')
-    + (pose ? ` · arm: ${pose}` : '');
-  el.querySelector('.conf div').style.width = pctOf(Math.max(...powers), 1);
 }
 
 function drawIntent() {
   const el = $('intent');
-  if (scheme === 'finger') {
-    drawFingerIntent(el);
-    return;
-  }
   el.hidden = !(source === 'emg' && app.gesture_trained());
   if (el.hidden) return;
   // every gesture driving its axis, and how far toward full speed (its level)
@@ -306,12 +288,12 @@ function drawIntent() {
   const powers = app.gesture_powers();
   const bands = app.gesture_bands();
   const speed = (g) => Math.min(powers[g] / bands[3 * g + 2], 1);
-  const on = GESTURES.map((_, g) => g).filter((g) => active[g]);
+  const on = moves().map((_, g) => g).filter((g) => active[g]);
   const pct = (w) => `${Math.round(w * 100)}%`;
   el.classList.toggle('active', on.length > 0);
-  el.querySelector('.what').textContent = on.length ? on.map((g) => GESTURES[g].short).join(' + ') : 'Relaxed';
+  el.querySelector('.what').textContent = on.length ? on.map((g) => moves()[g].short).join(' + ') : 'Relaxed';
   const pose = postureText(app.gesture_posture());
-  el.querySelector('.where').textContent = (on.length ? on.map((g) => `${jointFor(g)} ${pct(speed(g))}`).join(' · ') : 'no gesture past its rest band')
+  el.querySelector('.where').textContent = (on.length ? on.map((g) => `${jointFor(g)} ${pct(speed(g))}`).join(' · ') : `no ${SET.noun} past its rest band`)
     + (pose ? ` · arm: ${pose}` : '');
   el.querySelector('.conf div').style.width = on.length ? pct(Math.max(...on.map(speed))) : '0%';
 }
@@ -341,21 +323,26 @@ const channels = Array.from({ length: NUM_CH }, (_, ch) => {
   };
 });
 
-/** Per channel: its strongest calibrated gesture and that gesture's joint, or the grid row for fingers. */
+/**
+ * Per channel: its strongest calibrated movement and that movement's joint (for
+ * the digit array, its site comes first, since each pair has a fixed muscle).
+ */
 function refreshRoles() {
   const learned = app.channel_gestures();
   channels.forEach((c, ch) => {
     const g = learned[ch];
-    c.gesture.textContent = scheme === 'finger' ? GRID[ch] : g >= 0 ? GESTURES[g].short : '';
-    c.role.textContent = scheme === 'finger' ? '' : g >= 0 ? jointFor(g) : app.gesture_calibrated() ? 'helper' : 'uncalibrated';
+    const move = g >= 0 ? moves()[g]?.short ?? '' : '';
+    c.gesture.textContent = isDigit() ? DIGIT_SITES[ch] : move;
+    c.role.textContent = g >= 0 ? (isDigit() ? `${move} → ${jointFor(g)}` : jointFor(g))
+      : app.gesture_calibrated() ? 'helper' : 'uncalibrated';
   });
 }
 refreshRoles();
 
 /** Where a channel's electrode sits in the current scheme. */
-const siteName = (ch) => (scheme === 'finger' ? `CH${ch + 1} (grid ${GRID[ch].toLowerCase()})` : `CH${ch + 1}`);
+const siteName = (ch) => (isDigit() ? `CH${ch + 1} (${DIGIT_SITES[ch].toLowerCase()})` : `CH${ch + 1}`);
 
-// ---- finger grid -------------------------------------------------------------
+// ---- power bars ----------------------------------------------------------------
 
 const pctOf = (v, max) => `${Math.max(0, Math.min(v / max, 1)) * 100}%`;
 
@@ -382,43 +369,6 @@ function drawTrack(el, max, zones, target, value, on = false) {
   marker.classList.toggle('on', on);
 }
 
-function fingerBands(f) {
-  const b = app.finger_bands();
-  const o = f * 7;
-  return {
-    stasis: b[o], restExit: b[o + 1], level: b[o + 2], split: b[o + 3],
-    plusEnter: b[o + 4], plusExit: b[o + 5], plusTarget: b[o + 6],
-  };
-}
-
-/** rest (incl. the buffer) · faint − · firmer + · real movement (no ceiling with simple bands) */
-const bandZones = (b) => (app.finger_simple_bands()
-  ? [[0, b.restExit, 'rest'], [b.restExit, b.split, 'minus'], [b.split, POWER_MAX, 'plus']]
-  : [[0, b.restExit, 'rest'], [b.restExit, b.split, 'minus'], [b.split, 1, 'plus'], [1, POWER_MAX, 'over']]);
-/** finger_report() values per finger. */
-const REPORT_LEN = 13;
-const fingerCalibrated = (f) => app.finger_report()[f * REPORT_LEN] === 1;
-
-const STATE_TEXT = ['rest', 'faint…', 'faint −', 'firm +', 'moved'];
-const STATE_CLS = ['', 'minus', 'minus', 'plus', 'over'];
-
-const fingerRows = FINGERS.map((fg, f) => {
-  const row = document.createElement('div');
-  row.className = 'finger uncal';
-  row.innerHTML = `
-    <div class="name">${fg.name}<small></small></div>
-    <select aria-label="Joint driven by ${fg.name}">${DRIVEN.map((n, j) => `<option value="${j}">${n}</option>`).join('')}<option value="-1">Off</option></select>
-    <div class="state mono"></div>
-    <button class="small" title="Recalibrate and retrain just this finger">Redo</button>
-    <div class="ftrack"></div>`;
-  const select = row.querySelector('select');
-  select.value = String(app.finger_joints()[f]);
-  select.onchange = () => app.set_finger_joint(f, Number(select.value));
-  row.querySelector('button').onclick = () => startCalibration(() => app.finger_calibrate_one(f, true), 'finger', `redo ${FINGERS[f].name}`);
-  $('fingers').append(row);
-  return { row, state: row.querySelector('.state'), track: row.querySelector('.ftrack'), note: row.querySelector('small') };
-});
-
 /** "forearm raised 85%": the posture the decoder thinks the arm is in, or '' before calibration. */
 function postureText(m) {
   if (!m.length) return '';
@@ -426,63 +376,32 @@ function postureText(m) {
   return `${POSTURES[top].name} ${Math.round(m[top] * 100)}%`;
 }
 
-function drawFingerRows() {
-  const pose = postureText(app.finger_posture());
-  $('fposture').innerHTML = pose ? `<span>Arm posture</span><span>${pose}</span>` : '';
-  const powers = app.finger_powers();
-  const states = app.finger_states();
-  const rep = app.finger_report();
-  const simple = app.finger_simple_bands();
-  fingerRows.forEach((r, f) => {
-    const cal = fingerCalibrated(f);
-    const b = fingerBands(f);
-    const smoothMs = rep[f * REPORT_LEN + 11];
-    r.row.classList.toggle('uncal', !cal);
-    drawTrack(r.track, POWER_MAX, cal ? bandZones(b) : [[0, POWER_MAX, 'rest']], null, powers[f], states[f] >= BAND.MINUS);
-    r.state.textContent = cal ? STATE_TEXT[states[f]] : '—';
-    r.state.className = `state mono ${cal ? STATE_CLS[states[f]] : ''}`;
-    r.note.textContent = !cal ? 'not calibrated'
-      : (simple ? '− ¼–½ · + over ½' : `faint ${Math.round(b.level * 100)}% · firm ${Math.round(b.plusTarget * 100)}%`)
-        + (smoothMs > 65 ? ` · ${Math.round(smoothMs)} ms` : '');
-  });
-}
-
-function refreshFingerStatus() {
-  const trained = app.finger_trained();
-  $('ftrain').disabled = !trained;
-}
-
-/** Calibrated / Uncalibrated, for the current scheme's calibration section. */
+/** Calibrated / Uncalibrated, for the current scheme. */
 function drawCalPills() {
-  for (const [id, done] of [['cal-pill', app.gesture_calibrated()], ['fcal-pill', app.finger_trained()]]) {
-    const pill = $(id);
-    pill.textContent = done ? 'Calibrated' : 'Uncalibrated';
-    pill.className = `pill ${done ? 'good' : 'warn'}`;
-  }
+  const done = app.gesture_calibrated();
+  const pill = $('cal-pill');
+  pill.textContent = done ? 'Calibrated' : 'Uncalibrated';
+  pill.className = `pill ${done ? 'good' : 'warn'}`;
 }
 
 function setScheme(s) {
   if (coach.active) stopCalibration('scheme changed');
   scheme = s;
-  app.set_finger_mode(s === 'finger');
-  document.body.classList.toggle('fingers', s === 'finger');
+  // the digit array is bipolar: each pair cancels the common noise, so no channel averaging
+  app.set_digit_mode(isDigit());
+  document.body.classList.toggle('digit', isDigit());
   $('scheme').value = s;
-  $('guide-img').src = s === 'finger' ? 'finger-grid.svg' : 'electrodes.svg';
+  $('guide-img').src = isDigit() ? 'digit-array.svg' : 'electrodes.svg';
   try { localStorage.setItem('scheme', s); } catch { /* remembering is optional */ }
+  if (sim) startSimulator(); // the simulated person wears the new electrodes
+  if (serial && serial.wiring !== wiringFor()) {
+    setBci(`Reconnect the Cyton: this scheme needs ${wiringFor()} wiring, and it was set up for ${serial.wiring}.`);
+  }
   refreshRoles();
-  refreshFingerStatus();
   setSource(source);
 }
 
 $('scheme').onchange = (e) => setScheme(e.target.value);
-bindRange('fspeed', (v) => app.set_finger_speed(v), 2);
-// the decoder is the source of truth: never let a checkbox restored by the browser disagree with it
-$('fsimple').checked = app.finger_simple_bands();
-$('fsimple').onchange = (e) => app.set_finger_simple_bands(e.target.checked);
-$('fcal').onclick = () => {
-  if (requireStream()) showGuide(() => startCalibration(() => app.finger_calibrate(true), 'finger', 'full'));
-};
-$('ftrain').onclick = () => startCalibration(() => app.finger_train(), 'finger', 'train only');
 
 // ---- OpenBCI connection / simulator ----------------------------------------
 
@@ -491,10 +410,11 @@ let sim = null;
 
 const setBci = (msg) => { $('bci-status').textContent = msg; };
 
-// Always a single-row cable on 60 Hz mains. The cable shares one REF electrode,
-// so subtracting the channel average cancels the hum and noise it puts on every channel.
-app.set_car(true);
+// 60 Hz mains. Muscle pairs use a single-row cable sharing one REF electrode
+// (common wiring, with the channel average subtracted to cancel the hum it puts
+// on every channel); the digit array uses a pair per channel (bipolar, SRB2 off).
 app.set_mains(60);
+const wiringFor = () => (isDigit() ? 'bipolar' : 'common');
 
 const streaming = () => Boolean(sim || (serial && serial.binary));
 
@@ -503,7 +423,6 @@ function requireStream() {
   const ok = streaming();
   const msg = ok ? '' : 'Connect the Cyton (or start Simulate) first.';
   setCal(msg);
-  $('fcal-status').textContent = msg;
   return ok;
 }
 
@@ -524,7 +443,7 @@ $('connect').onclick = async () => {
     return;
   }
   serial = new CytonSerial({
-    wiring: 'common',
+    wiring: wiringFor(),
     onData: feedStream,
     onStatus: setBci,
     onClose: () => {
@@ -549,6 +468,12 @@ $('connect').onclick = async () => {
   updateButtons();
 };
 
+/** A simulated Cyton wired for the current scheme (bipolar pairs see little common noise and crosstalk). */
+function startSimulator() {
+  app.reset_stream();
+  sim = isDigit() ? new CytonSimulator({ differential: true, crosstalk: false, patterns: DIGIT_PATTERNS }) : new CytonSimulator();
+}
+
 $('simulate').onclick = () => {
   if (sim) {
     sim = null;
@@ -556,8 +481,7 @@ $('simulate').onclick = () => {
     setSource('manual');
     setBci('');
   } else {
-    app.reset_stream();
-    sim = new CytonSimulator();
+    startSimulator();
     setSource('emg');
     setBci('Simulating a Cyton. Hold the joint keys or buttons to contract the mapped channels.');
   }
@@ -596,132 +520,91 @@ addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeGuide();
 });
 
-// ---- the two control schemes ---------------------------------------------------
+// ---- the calibration set ---------------------------------------------------------
 //
-// Both are calibrated the same way inside the WASM (finger.rs, gesture.rs): rest
-// in three arm postures, then every pattern strong → half → faint, then training.
+// Both schemes are calibrated the same way inside the WASM (gesture.rs): rest in
+// three arm postures, then every movement strong → half → faint, then training.
 // The schedule is clocked by incoming samples, so the cue on screen and the
-// recorded window can't drift apart. One coach draws either; this is what
-// differs between them.
+// recorded window can't drift apart. The calls act on the current scheme.
 
-const SETS = {
-  finger: {
-    label: 'Finger calibration',
-    noun: 'finger',
-    count: NUM_FINGERS,
-    status: () => app.finger_status(),
-    skip: () => app.finger_skip(),
-    cancel: () => app.finger_cancel(),
-    ready: () => {}, // finger steps don't wait
-    anim: () => null,
-    trained: () => app.finger_trained(),
-    name: (f) => FINGERS[f].name,
-    restRead: 'finger tension',
-    prepare: (step, f) => (step === FSTEP.FAINT
-      ? 'Tension only this time: don\'t let the finger move.'
-      : `${step === FSTEP.HARD ? 'Forearm back on the table, palm up. ' : ''}This one is a real movement: ${FINGERS[f].how}.`),
-    hard: (f) => [`Flex ${FINGERS[f].the} hard`, `${cap(FINGERS[f].how)} and hold. Keep the other fingers loose.`],
-    other: (g) => `${FINGERS[g].name} is stronger: keep the other fingers loose`,
-    letGo: (f) => `Let ${FINGERS[f].the} go`,
-    noContact: (c) => `Too few electrodes with contact: CH${c + 1} (${GRID[c].toLowerCase()}) is off`,
-    ceiling: 'where the finger really moves',
-  },
-  gesture: {
-    label: 'Gesture calibration',
-    noun: 'gesture',
-    count: GESTURES.length,
-    status: () => app.gesture_status(),
-    skip: () => app.gesture_skip(),
-    cancel: () => app.gesture_cancel(),
-    ready: () => app.gesture_ready(),
-    anim: (g) => GESTURES[g].anim,
-    trained: () => app.gesture_trained(),
-    name: (g) => GESTURES[g].short,
-    restRead: 'a gesture',
-    prepare: (step, g) => (step === FSTEP.FAINT
-      ? 'Tension only this time: as if about to do it, with the arm still.'
-      : `${step === FSTEP.HARD ? 'Arm back down, forearm on the table. ' : ''}${GESTURES[g].cue}: ${GESTURES[g].how}. A real contraction this time.`),
-    hard: (g) => [`${GESTURES[g].cue}: hard`, `${cap(GESTURES[g].how)}, and hold. Keep the rest of the arm relaxed.`],
-    other: (h) => `That reads as ${GESTURES[h].short}: keep the rest of the arm relaxed`,
-    letGo: () => 'Let go',
-    noContact: (c) => `Too few electrodes with contact: CH${c + 1} is off`,
-    ceiling: 'your half-strength contraction',
-  },
+const SET = {
+  get label() { return isDigit() ? 'Digit array calibration' : 'Gesture calibration'; },
+  get noun() { return isDigit() ? 'movement' : 'gesture'; },
+  get count() { return moves().length; },
+  status: () => app.gesture_status(),
+  skip: () => app.gesture_skip(),
+  cancel: () => app.gesture_cancel(),
+  ready: () => app.gesture_ready(),
+  anim: (g) => moves()[g]?.anim ?? null,
+  trained: () => app.gesture_trained(),
+  name: (g) => moves()[g].short,
+  get restRead() { return isDigit() ? 'a finger movement' : 'a gesture'; },
+  prepare: (step, g) => (step === FSTEP.FAINT
+    ? 'Tension only this time: as if about to do it, with the arm and fingers still.'
+    : `${step === FSTEP.HARD ? 'Arm back down, forearm on the table. ' : ''}${moves()[g].cue}: ${moves()[g].how}. A real contraction this time.`),
+  hard: (g) => [`${moves()[g].cue}: hard`, `${cap(moves()[g].how)}, and hold. Keep the rest of the arm relaxed.`],
+  other: (h) => `That reads as ${moves()[h].short}: keep the rest of the arm relaxed`,
+  letGo: () => 'Let go',
+  noContact: (c) => `Too few electrodes with contact: ${siteName(c)} is off`,
+  ceiling: 'your half-strength contraction',
 };
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
-const setOf = () => SETS[scheme === 'finger' ? 'finger' : 'gesture'];
 
 // ---- simulator ------------------------------------------------------------------
-// Like a person, the simulated user steers each pattern by watching a reading:
-// the coach's bar, or the decoded power. Fingers drive the simulated finger grid;
-// gesture g's muscle sits under channel g (any placement works: calibration
-// learns it), with grip also bracing the finger extensors under CH8.
+// Like a person, the simulated user steers each movement by watching a reading:
+// the coach's bar, or the decoded power. Muscle pairs: gesture g's muscle sits
+// under channel g (any placement works: calibration learns it), with grip also
+// bracing the finger extensors under CH8. Digit array: each movement's share on
+// every pair (DIGIT_PATTERNS in simulator.js).
 
-const simDrive = { finger: new Float32Array(NUM_FINGERS), gesture: new Float32Array(GESTURES.length) };
+const simDrive = new Float32Array(NUM_CH);
 
-function steerSim(drive, i, aim, reading, guess, gain = 0.012) {
-  const d = drive[i] || guess;
-  drive[i] = Math.max(0.001, Math.min(1.2, d + gain * (aim - reading)));
+function steerSim(i, aim, reading, guess, gain = 0.012) {
+  const d = simDrive[i] || guess;
+  simDrive[i] = Math.max(0.001, Math.min(1.2, d + gain * (aim - reading)));
 }
 
-/** Simulated tension for the current scheme: playing along with the coach, or the keys once trained. */
-function simulatePatterns(kind) {
-  const set = SETS[kind];
-  const drive = simDrive[kind];
+/** Simulated tension for each movement: playing along with the coach, or the keys once trained. */
+function simulatePatterns() {
   const steered = new Set();
-  const s = set.status();
+  const s = SET.status();
   // the cued rest posture during calibration (limp for everything else), otherwise keys 1/2/3
   sim.setPosture(s.length ? Math.max(s[18], 0) : simPosture);
   if (s.length) {
     const [step, i, phase, , , , , , meterKind, meter, lo, hi] = s;
     if (phase === PHASE.RECORD && step !== FSTEP.REST) {
       if (meterKind === FMETER.ACTIVITY) {
-        drive[i] = 1;
+        simDrive[i] = 1;
       } else {
         const aim = Number.isFinite(s[17]) ? s[17] : lo + 0.45 * (hi - lo);
-        steerSim(drive, i, aim, meter, meterKind === FMETER.OF_HARD ? aim : aim * 0.45);
+        steerSim(i, aim, meter, meterKind === FMETER.OF_HARD ? aim : aim * 0.45);
       }
       steered.add(i);
     }
-  } else if (kind === 'finger' && app.finger_trained()) {
-    // keys: + key = firmer, − key = faint, on the finger that drives that joint
-    const powers = app.finger_powers();
-    const joints = app.finger_joints();
-    for (let f = 0; f < NUM_FINGERS; f++) {
-      if (joints[f] < 0) continue;
-      const [up, down] = KEYS[joints[f]].map((k) => held.has(k));
-      if (!up && !down) continue;
-      const b = fingerBands(f);
-      if (shift) drive[f] = 1;
-      // a deliberate press: starts near the right tension and settles quickly
-      else steerSim(drive, f, up ? b.plusTarget : b.level, powers[f], up ? 0.3 : 0.12, 0.02);
-      steered.add(f);
-    }
-  } else if (kind === 'gesture' && app.gesture_trained()) {
-    // keys: the axis key in a gesture's direction performs it, at a little over its level
+  } else if (app.gesture_trained()) {
+    // keys: the axis key in a movement's direction performs it, at a little over its level
     const powers = app.gesture_powers();
     const bands = app.gesture_bands();
-    GESTURE_AXES.forEach(([axis, dir], g) => {
+    axesOf().forEach(([axis, dir], g) => {
       if (!held.has(KEYS[axis][dir > 0 ? 0 : 1])) return;
-      if (shift) drive[g] = 1;
-      else steerSim(drive, g, bands[3 * g + 2] * 1.15, powers[g], 0.2, 0.02);
+      if (shift) simDrive[g] = 1;
+      else steerSim(g, bands[3 * g + 2] * 1.15, powers[g], 0.2, 0.02);
       steered.add(g);
     });
   }
-  drive.forEach((_, i) => { if (!steered.has(i)) drive[i] = 0; });
+  simDrive.forEach((_, i) => { if (!steered.has(i)) simDrive[i] = 0; });
 }
 
 function pumpSimulator(now) {
-  const kind = scheme === 'finger' ? 'finger' : 'gesture';
-  simulatePatterns(kind);
-  const fingers = kind === 'finger' ? simDrive.finger : new Float32Array(NUM_FINGERS);
-  fingers.forEach((v, f) => sim.setFingerLevel(f, v));
-  const levels = new Float32Array(NUM_CH);
-  if (kind === 'gesture') {
-    simDrive.gesture.forEach((v, g) => { levels[g] = v; });
+  simulatePatterns();
+  if (isDigit()) {
+    DIGITS.forEach((_, g) => sim.setPatternLevel(g, simDrive[g]));
+  } else {
+    const levels = new Float32Array(NUM_CH);
+    GESTURES.forEach((_, g) => { levels[g] = simDrive[g]; });
     levels[SIM_FINGER_EXTENSORS] = Math.max(levels[SIM_FINGER_EXTENSORS], levels[GRIP] * SIM_GRIP_BRACE);
+    levels.forEach((v, ch) => sim.setLevel(ch, v));
   }
-  levels.forEach((v, ch) => sim.setLevel(ch, v));
   const bytes = sim.pump(now);
   if (bytes.length) feedStream(bytes);
 }
@@ -735,7 +618,7 @@ const STUCK_HINT_S = 6;
 const coach = {
   el: $('coach'),
   card: $('coach').querySelector('.card'),
-  kind: 'gesture', // or 'finger'
+  scheme: 'muscle', // the scheme being calibrated
   active: false,
   lastKey: '',
   lastPackets: 0,
@@ -768,28 +651,21 @@ function showCoachParts(running) {
   $('coach-bar').parentElement.hidden = !running;
 }
 
-/** kind: 'gesture' (muscle pairs) or 'finger'; mode: 'full', 'train only', 'redo …' for the log. */
-function startCalibration(begin, kind, mode = '') {
+/**
+ * Starts a calibration run of the current scheme and records it.
+ * mode: 'full', 'train only', 'redo …'; name: the run's name, from askRunName().
+ */
+function startCalibration(begin, mode, name) {
   if (!requireStream()) return;
   if (coach.active) stopCalibration('restarted');
   const before = toBase64(app.export_calibration());
   begin();
-  const s = SETS[kind].status();
+  const s = SET.status();
   if (!s.length) return;
-  recorder.start({
-    kind,
-    mode,
-    source: sim ? 'simulator' : 'cyton',
-    sampleRate: 250,
-    uvPerCount: 4.5 / 24 / 8388607 * 1e6,
-    settings: panelSettings(),
-    calibrationBefore: before,
-    statusFields: STATUS_FIELDS,
-    userAgent: navigator.userAgent,
-  });
+  recorder.start(runMeta(name, mode, before));
   coach.lastLogKey = '';
   coach.lastLogAt = 0;
-  coach.kind = kind;
+  coach.scheme = scheme;
   coach.active = true;
   coach.wasClean = null;
   coach.lastKey = '';
@@ -804,7 +680,6 @@ function startCalibration(begin, kind, mode = '') {
 function stopCalibration(reason = 'cancelled') {
   if (coach.active) recordEnd(reason);
   app.gesture_cancel();
-  app.finger_cancel();
   coach.active = false;
   coach.el.hidden = true;
   $('trainer').hidden = true;
@@ -814,7 +689,7 @@ function stopCalibration(reason = 'cancelled') {
 /** Space or the Ready button: the user is in position, so the step's countdown starts. */
 function coachReady() {
   if (!coach.active) return;
-  const set = SETS[coach.kind];
+  const set = SET;
   const s = set.status();
   if (s.length && s[19] === 1) {
     recorder.event('ready');
@@ -834,8 +709,7 @@ function isStalled(now) {
 }
 
 /** [css class, message] for the coach's live check. */
-function checkMessage(set, check, arg, step, phase, goal, i) {
-  const finger = set === SETS.finger;
+function checkMessage(set, check, arg, step, phase, i) {
   switch (check) {
     case FCHECK.CLEAN:
       if (phase === PHASE.RELAX) return ['clean', 'Relaxed'];
@@ -849,15 +723,10 @@ function checkMessage(set, check, arg, step, phase, goal, i) {
       if (step === FSTEP.HARD) return ['wait', 'Not enough yet: harder'];
       if (step === FSTEP.MEDIUM) return ['wait', 'A bit more'];
       if (step === FSTEP.FAINT) return ['wait', 'Below the noise: just a touch more, to the left edge of the box'];
-      if (!finger) return ['wait', 'More: a little firmer, arm still'];
-      return ['wait', goal === BAND.MINUS ? 'Not there yet: a faint tension' : 'More: firmer, still without moving'];
+      return ['wait', 'More: a little firmer, arm still'];
     case FCHECK.STRONG:
       if (step === FSTEP.MEDIUM) return ['bad', 'Nearly as hard as the hard one: ease off'];
-      if (!finger) return ['bad', 'Too firm: ease off to the centre line'];
-      if (step === FSTEP.TRAIN && goal === BAND.MINUS && app.finger_states()[i] !== BAND.OVER) {
-        return ['bad', 'Too firm: that\'s the + band, ease off'];
-      }
-      return ['bad', 'Over the ceiling: that\'s a real movement, ease off'];
+      return ['bad', 'Too firm: ease off to the centre line'];
     case FCHECK.FAINTER:
       return ['wait', 'A little fainter: under the right edge of the box'];
     case FCHECK.OTHER:
@@ -879,7 +748,6 @@ const LEGEND = {
 };
 
 function drawCoachBar(set, kind, meter, lo, hi, step, i, clean) {
-  const finger = set === SETS.finger;
   let max;
   let zones;
   let label;
@@ -895,12 +763,10 @@ function drawCoachBar(set, kind, meter, lo, hi, step, i, clean) {
     if (step === FSTEP.FAINT) {
       // zoomed in on the bottom of the range, so a box just above the noise has room
       max = Math.min(POWER_MAX, Math.max(0.25, hi * 2.5));
-      zones = !finger || app.finger_simple_bands()
-        ? [[0, lo, 'weak'], [lo, max, 'ok']]
-        : [[0, lo, 'weak'], [lo, Math.min(1, max), 'ok'], [1, POWER_MAX, 'over']];
+      zones = [[0, lo, 'weak'], [lo, max, 'ok']];
     } else {
       max = POWER_MAX;
-      zones = finger ? bandZones(fingerBands(i)) : [[0, lo, 'weak'], [lo, max, 'ok']];
+      zones = [[0, lo, 'weak'], [lo, max, 'ok']];
     }
     label = `${set.name(i)}: ${Math.round(meter * 100)}% of the ceiling (${set.ceiling})`
       + (max < 1 ? ` · bar shows 0–${Math.round(max * 100)}%` : '');
@@ -919,13 +785,13 @@ function drawCoachBar(set, kind, meter, lo, hi, step, i, clean) {
 
 function drawCoach(now) {
   if (!coach.active) return;
-  const set = SETS[coach.kind];
+  const set = SET;
   const s = set.status();
   if (!s.length) {
     finishCalibration();
     return;
   }
-  const [step, i, phase, progress, secondsLeft, check, arg, stuck, kind, meter, lo, hi, segment, , round, rounds, goal, aim, posture, waitFlag] = s;
+  const [step, i, phase, progress, secondsLeft, check, arg, stuck, kind, meter, lo, hi, segment, , round, rounds, , aim, posture, waitFlag] = s;
   const waiting = waitFlag === 1;
   const stalled = isStalled(now);
   logStatus(now, s, stalled);
@@ -948,9 +814,9 @@ function drawCoach(now) {
   $('trainer').hidden = !training;
   if (!training) $('trainer-anim').hidden = true;
   if (training) {
-    drawTrainer({ set, i, phase, progress, check, round, rounds, goal, lo, hi, aim, shown, stalled });
+    drawTrainer({ set, i, phase, progress, check, round, rounds, lo, hi, aim, shown, stalled });
   } else {
-    drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kind, shown, lo, hi, segment, goal, stalled, posture, waiting });
+    drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kind, shown, lo, hi, segment, stalled, posture, waiting });
   }
 
   // sounds on the sample clock: a tone at each switch, ticks before a recording,
@@ -981,9 +847,7 @@ function drawCoach(now) {
  * grows red to the right when over it and green to the left when under, and
  * each end of the meter is the edge of the band the trial asks for.
  */
-function drawTrainer({ set, i, phase, progress, check, round, rounds, goal, lo, hi, aim, shown, stalled }) {
-  const finger = set === SETS.finger;
-  const minus = goal === BAND.MINUS;
+function drawTrainer({ set, i, phase, progress, check, round, rounds, lo, hi, aim, shown, stalled }) {
   const el = $('trainer');
   const active = phase === PHASE.RECORD;
   el.classList.toggle('idle', !active);
@@ -995,17 +859,14 @@ function drawTrainer({ set, i, phase, progress, check, round, rounds, goal, lo, 
     anim.src = pic;
     anim.alt = set.name(i);
   }
-  $('trainer-what').textContent = finger
-    ? `${FINGERS[i].name} ${minus ? 'faint' : 'firmer'} → ${jointName(app.finger_joints()[i])} ${minus ? '−' : '+'}`
-    : `${GESTURES[i].short} → ${jointFor(i)}`;
+  $('trainer-what').textContent = `${set.name(i)} → ${jointFor(i)}`;
   $('trainer-trial').textContent = `trial ${round + 1}/${rounds}`;
   $('trainer-skip').textContent = `Skip ${set.noun}`;
   $('trainer-hint').textContent = stalled ? 'Paused: no data from the board'
     : phase === PHASE.PREPARE
-      ? (!finger ? 'Next: a light, steady intention, arm still' : minus ? 'Next: the faintest tension you can feel' : 'Next: a little firmer, finger still')
+      ? 'Next: a light, steady intention, arm still'
       : phase === PHASE.RELAX ? (check === FCHECK.CLEAN ? 'Relaxed' : set.letGo(i))
-        : finger && app.finger_states()[i] === BAND.OVER ? 'Over the ceiling: that was a real movement'
-          : 'Bring it to the centre line and hold';
+        : 'Bring it to the centre line and hold';
   const fill = el.querySelector('.t-fill');
   if (Number.isFinite(aim)) {
     const over = shown >= aim;
@@ -1020,7 +881,7 @@ function drawTrainer({ set, i, phase, progress, check, round, rounds, goal, lo, 
 }
 
 /** Phase 1 (and rest): the full coach card with the power bar, and the posture picture at rest. */
-function drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kind, shown, lo, hi, segment, goal, stalled, posture, waiting }) {
+function drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kind, shown, lo, hi, segment, stalled, posture, waiting }) {
   const pose = POSTURES[posture];
   const name = i >= 0 ? set.name(i) : '';
   let cls;
@@ -1091,7 +952,7 @@ function drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kin
   $('coach-bar').parentElement.hidden = phase !== PHASE.RECORD;
   $('coach-bar').style.width = `${progress * 100}%`;
 
-  const [checkCls, checkText] = checkMessage(set, check, arg, step, phase, goal, i);
+  const [checkCls, checkText] = checkMessage(set, check, arg, step, phase, i);
   $('coach-check').className = checkCls;
   $('coach-check').querySelector('.text').textContent = checkText;
   const skip = $('coach-skip');
@@ -1111,7 +972,7 @@ function drawCard({ set, step, i, phase, progress, count, check, arg, stuck, kin
 
 // ---- calibration log ---------------------------------------------------------
 
-/** Names for the coach status vector (finger_status / gesture_status), as logged. */
+/** Names for the coach status vector (gesture_status), as logged. */
 const STATUS_FIELDS = ['step', 'index', 'phase', 'progress', 'secondsLeft', 'check', 'arg', 'stuck', 'meterKind',
   'meter', 'lo', 'hi', 'segment', 'segments', 'round', 'rounds', 'goal', 'aim', 'posture', 'waiting'];
 const LOG_TICK_MS = 100;
@@ -1125,23 +986,80 @@ function logStatus(now, s, stalled) {
     coach.lastLogKey = key;
     coach.lastLogAt = now;
   } else if (now - coach.lastLogAt >= LOG_TICK_MS) {
-    recorder.event('status', { status, stalled, envelopes: [...app.envelopes()], contact: [...app.contact()] });
+    // what the decoder makes of it, and where the arm is, for offline decoders to compare against
+    recorder.event('status', {
+      status,
+      stalled,
+      envelopes: [...app.envelopes()],
+      contact: [...app.contact()],
+      powers: [...app.gesture_powers()],
+      active: [...app.gesture_active()],
+      posture: [...app.gesture_posture()],
+      axisInputs: [...app.gesture_axis_inputs()],
+      joints: [...app.joint_angles()],
+    });
     coach.lastLogAt = now;
   }
 }
 
-/** Writes result.json: how the run ended and everything the decoders learned. */
+/** Everything about a run that the samples alone don't say, for meta.json. */
+function runMeta(name, mode, calibrationBefore) {
+  const digit = isDigit();
+  return {
+    name,
+    scheme,
+    kind: scheme, // older runs said 'gesture' or 'finger'
+    mode,
+    source: sim ? 'simulator' : 'cyton',
+    wiring: wiringFor(),
+    sampleRate: 250,
+    uvPerCount: 4.5 / 24 / 8388607 * 1e6,
+    cytonChannelSettings: 'gain 24, normal input, bias on, SRB1 off, '
+      + `SRB2 ${digit ? 'off (bipolar pairs)' : 'on (shared REF)'}`,
+    mains: 60,
+    car: app.car(),
+    filterChain: [
+      '20 Hz 4th-order Butterworth high-pass per channel',
+      app.car() ? 'common-average reference over channels with contact (3 or more)' : 'no common-average reference',
+      'notch at mains (60 Hz) twice and at 120 Hz twice, Q 5',
+      'full-wave rectify',
+      '5 Hz 2nd-order Butterworth low-pass: the envelope',
+    ],
+    placement: Array.from({ length: NUM_CH }, (_, ch) => ({
+      channel: ch + 1,
+      site: digit ? DIGIT_SITES[ch] : 'any (calibration learns each gesture across all channels)',
+    })),
+    movements: moves().map((m, g) => {
+      const [axis, direction] = axesOf()[g];
+      return { index: g, name: m.short, cue: m.cue, how: m.how, axis, axisName: AXES[axis], direction, drives: jointFor(g) };
+    }),
+    axes: AXES,
+    postures: POSTURES.map((p) => p.name),
+    stepNames: ['rest', 'hard', 'medium', 'faint', 'train'],
+    phaseNames: ['prepare', 'record', 'relax'],
+    calibrationVersion: app.calibration_version(),
+    settings: panelSettings(),
+    calibrationBefore,
+    statusFields: STATUS_FIELDS,
+    tickFields: ['envelopes (µV per channel)', 'contact (per channel)', 'powers (per movement)',
+      'active (per movement)', 'posture (match per rest posture)', 'axisInputs (base, reach, elbow, gripper; -1..1)',
+      'joints (degrees: base, shoulder, elbow, gripper)'],
+    userAgent: navigator.userAgent,
+  };
+}
+
+/** Writes result.json: how the run ended and everything the decoder learned. */
 function recordEnd(outcome) {
-  const finger = coach.kind === 'finger';
   recorder.finish({
     outcome,
-    kind: coach.kind,
-    report: [...(finger ? app.finger_report() : app.gesture_report())],
-    reportLen: finger ? REPORT_LEN : GREPORT_LEN,
-    calibrated: finger ? app.finger_trained() : app.gesture_calibrated(),
-    bands: [...(finger ? app.finger_bands() : app.gesture_bands())],
-    channelGestures: finger ? null : [...app.channel_gestures()],
-    fingerJoints: finger ? [...app.finger_joints()] : null,
+    scheme: coach.scheme,
+    report: [...app.gesture_report()],
+    reportLen: GREPORT_LEN,
+    reportFields: ['calibrated', 'faint', 'isolation', 'hits', 'trials', 'level', 'stasis', 'mixed'],
+    calibrated: app.gesture_calibrated(),
+    bands: [...app.gesture_bands()],
+    bandFields: ['stasis', 'restExit', 'level'],
+    channelGestures: [...app.channel_gestures()],
     stats: [...app.stats()],
     settings: panelSettings(),
     calibration: toBase64(app.export_calibration()),
@@ -1159,70 +1077,79 @@ function finishCalibration() {
   coach.card.className = 'card done';
   $('coach-phase').textContent = 'DONE';
   $('coach-title').textContent = 'Levels set';
-  if (coach.kind === 'finger') finishFingerResults();
-  else finishGestureResults();
+  finishResults();
   showCoachParts(false);
-  refreshFingerStatus();
   refreshRoles();
 }
 
 const grade = (v, good, ok) => (v >= good ? 'good' : v >= ok ? 'ok' : 'bad');
 
-function finishFingerResults() {
-  const rep = app.finger_report();
-  const joints = app.finger_joints();
-  const rows = FINGERS.map((fg, f) => {
-    const [cal, faint, , isolation, hits, trials, , , , heldFaint, heldFirm, smoothMs, mixed] =
-      rep.slice(f * REPORT_LEN, (f + 1) * REPORT_LEN);
-    const name = `<span>${fg.name} → ${jointName(joints[f])}</span>`;
-    if (!cal) return `<div class="res fres">${name}<span class="bad">skipped</span><span></span><span></span><span></span><span></span></div>`;
-    const training = trials ? `<span class="${grade(hits / trials, 0.75, 0.5)}">${hits}/${trials} hits</span>` : '<span>—</span>';
-    const pct = (v) => (v > 0 ? Math.round(v * 100) : '–');
-    return `<div class="res fres">${name}<span class="mono">${Math.round(faint * 100)}%</span>`
-      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? 'The faint round looked more like another finger, so it was not used' : ''}">`
-      + `${Math.round(isolation * 100)}%${mixed ? ' · mixed' : ''}</span>${training}`
-      + `<span class="mono">${pct(heldFaint)} / ${pct(heldFirm)}%</span><span class="mono">${Math.round(smoothMs)} ms</span></div>`;
-  });
-  $('coach-results').innerHTML = '<div class="res fres head"><span>Finger → joint</span><span>faintest</span>'
-    + '<span>isolated</span><span>training</span><span>you held</span><span>smoothing</span></div>' + rows.join('');
-  $('coach-step').textContent = 'Finger calibration complete';
-  $('coach-detail').textContent = 'Faintest: how far below the ceiling (where the finger really moves) each finger still read clearly. '
-    + 'Isolated: how often that faint tension read as the right finger ("mixed": the faint round looked like another finger, so it wasn\'t used). '
-    + 'You held: where your faint and firm attempts '
-    + 'really averaged (raw); the decoder now maps them onto the middle of the − and + bands. '
-    + 'Smoothing: how much it filters that finger to cancel your wobble. Train only again refines both. '
-    + 'Redo a finger from its row in the panel.';
-}
-
 /** gesture_report(): [calibrated, faint, isolation, hits, trials, level, stasis, mixed] per gesture. */
 const GREPORT_LEN = 8;
 
-function finishGestureResults() {
+function finishResults() {
   const rep = app.gesture_report();
-  const rows = GESTURES.map((gs, g) => {
+  const noun = SET.noun;
+  const rows = moves().map((gs, g) => {
     const [cal, faint, isolation, hits, trials, level, , mixed] = rep.slice(g * GREPORT_LEN, (g + 1) * GREPORT_LEN);
     const name = `<span>${gs.short} → ${jointFor(g)}</span>`;
-    const redo = `<button class="small" data-redo="${g}" title="Recalibrate and retrain just this gesture">Redo</button>`;
+    const redo = `<button class="small" data-redo="${g}" title="Recalibrate and retrain just this ${noun}">Redo</button>`;
     if (!cal) return `<div class="res gres">${name}<span class="bad">skipped</span><span></span><span></span><span></span>${redo}</div>`;
     const training = trials ? `<span class="${grade(hits / trials, 0.6, 0.4)}">${hits}/${trials} hits</span>` : '<span>—</span>';
     return `<div class="res gres">${name}<span class="mono">${Math.round(faint * 100)}%</span>`
-      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? 'The faint round looked more like another gesture, so it was not used' : ''}">`
+      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? `The faint round looked more like another ${noun}, so it was not used` : ''}">`
       + `${Math.round(isolation * 100)}%${mixed ? ' · mixed' : ''}</span>${training}`
       + `<span class="mono">${Math.round(level * 100)}%</span>${redo}</div>`;
   });
-  $('coach-results').innerHTML = '<div class="res gres head"><span>Gesture → axis</span><span>faint</span>'
+  $('coach-results').innerHTML = `<div class="res gres head"><span>${cap(noun)} → axis</span><span>faint</span>`
     + '<span>isolated</span><span>training</span><span>level</span><span></span></div>' + rows.join('');
-  $('coach-step').textContent = 'Gesture calibration complete';
+  $('coach-step').textContent = `${SET.label} complete`;
   $('coach-detail').textContent = 'Faint: how far below the ceiling (your half-strength contraction) the faint round read. '
-    + 'Isolated: how often that faint intention read as the right gesture ("mixed": it looked like another one, so it wasn\'t used). '
+    + `Isolated: how often that faint intention read as the right ${noun} ("mixed": it looked like another one, so it wasn't used). `
     + 'Level: the power that now drives its axis at full speed; training stepped it down after two hits in a row and up after a miss. '
-    + 'Train only practises again; Redo recalibrates one gesture.';
+    + `Train only practises again; Redo recalibrates one ${noun}.`;
 }
 
-$('gcal').onclick = () => {
-  if (requireStream()) showGuide(() => startCalibration(() => app.gesture_calibrate(true), 'gesture', 'full'));
+// ---- run name: asked before every calibration run, so recordings can be tracked ----
+
+const runDialog = $('run-name');
+const runInput = $('run-name-input');
+let afterName = null;
+
+/** Asks for the run's name (prefilled with the last one), then calls then(name). */
+function askRunName(what, then) {
+  if (!requireStream()) return;
+  afterName = then;
+  $('run-name-what').textContent = what;
+  try { runInput.value = localStorage.getItem('runName') ?? ''; } catch { runInput.value = ''; }
+  $('run-name-error').textContent = '';
+  runDialog.showModal();
+  runInput.select();
+}
+$('run-name-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = runInput.value.trim();
+  if (!/[0-9a-z]/i.test(name)) {
+    $('run-name-error').textContent = 'Give the run a name (letters or digits), e.g. the person and the session.';
+    return;
+  }
+  try { localStorage.setItem('runName', name); } catch { /* remembering is optional */ }
+  const then = afterName;
+  afterName = null;
+  runDialog.close();
+  then(name);
+});
+$('run-name-cancel').onclick = () => {
+  afterName = null;
+  runDialog.close();
 };
-$('gtrain').onclick = () => startCalibration(() => app.gesture_train(), 'gesture', 'train only');
+
+$('gcal').onclick = () => askRunName(`${SET.label}: full`, (name) => {
+  showGuide(() => startCalibration(() => app.gesture_calibrate(true), 'full', name));
+});
+$('gtrain').onclick = () => askRunName(`${SET.label}: train only`, (name) => {
+  startCalibration(() => app.gesture_train(), 'train only', name);
+});
 $('coach-cancel').onclick = () => {
   recorder.event('cancel');
   stopCalibration('cancelled');
@@ -1230,17 +1157,19 @@ $('coach-cancel').onclick = () => {
 $('coach-close').onclick = () => { coach.el.hidden = true; };
 $('coach-results').addEventListener('click', (e) => {
   const g = e.target.dataset?.redo;
-  if (g !== undefined) startCalibration(() => app.gesture_calibrate_one(Number(g), true), 'gesture', `redo ${GESTURES[g].short}`);
+  if (g === undefined) return;
+  const what = `redo ${moves()[g].short}`;
+  askRunName(`${SET.label}: ${what}`, (name) => startCalibration(() => app.gesture_calibrate_one(Number(g), true), what, name));
 });
 const skipStep = () => {
   recorder.event('skip');
-  SETS[coach.kind].skip();
+  SET.skip();
 };
 $('coach-skip').onclick = skipStep;
 $('trainer-skip').onclick = skipStep;
 $('trainer-stop').onclick = () => $('coach-cancel').click();
 addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
+  if (e.key !== 'Escape' || runDialog.open) return;
   if (coach.active) $('coach-cancel').click();
   else coach.el.hidden = true;
 });
@@ -1369,7 +1298,7 @@ function updateUi(now) {
   const act = app.activations();
   const contact = app.contact();
   // every channel is recorded for every pattern in phase 1
-  const cal = setOf().status();
+  const cal = SET.status();
   const recording = cal.length > 0 && cal[2] === PHASE.RECORD && cal[0] !== FSTEP.TRAIN;
   channels.forEach((c, ch) => {
     c.fill.style.width = `${act[ch] * 100}%`;
@@ -1397,11 +1326,10 @@ function updateUi(now) {
     drawStats();
   }
 
-  if (scheme === 'finger') drawFingerRows();
   drawCalPills();
 
   const pill = $('mode-pill');
-  const uncal = source === 'emg' && !(scheme === 'finger' ? app.finger_trained() : app.gesture_calibrated());
+  const uncal = source === 'emg' && !app.gesture_calibrated();
   pill.textContent = source === 'emg' ? (uncal ? 'EMG · uncalibrated' : 'EMG') : 'Manual';
   pill.className = `pill ${source === 'emg' ? (uncal ? 'warn' : 'emg') : ''}`;
 }
@@ -1530,7 +1458,7 @@ async function loadArmMeshes() {
 // base64) plus the panel settings. Saved when a calibration finishes and when a
 // setting changes; loaded on startup.
 
-const RANGES = ['gain', 'fspeed'];
+const RANGES = ['gain'];
 let autosave = false; // off until the saved file has been read, so it can't be overwritten unread
 let saveTimer = null;
 const setSaved = (msg) => { $('saved-status').textContent = msg; };
@@ -1545,9 +1473,7 @@ const fromBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 function panelSettings() {
   return {
     ...Object.fromEntries(RANGES.map((id) => [id, Number($(id).value)])),
-    simpleBands: $('fsimple').checked,
     drift,
-    fingerJoints: [...app.finger_joints()],
   };
 }
 
@@ -1556,14 +1482,11 @@ function applySettings(st) {
   const set = (el, value, event) => {
     if (value === undefined) return;
     if (el.type === 'checkbox') el.checked = value;
-    else if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === String(value))) el.value = '-1';
     else el.value = String(value);
     el.dispatchEvent(new Event(event, { bubbles: true }));
   };
   for (const id of RANGES) set($(id), st[id], 'input');
-  set($('fsimple'), st.simpleBands, 'change');
   if (typeof st.drift === 'boolean') setDrift(st.drift);
-  fingerRows.forEach((r, f) => set(r.row.querySelector('select'), st.fingerJoints?.[f], 'change'));
 }
 
 async function saveCalibration() {
@@ -1603,14 +1526,13 @@ async function loadCalibration() {
     return;
   }
   applySettings(saved.settings ?? {});
-  refreshFingerStatus();
   refreshRoles();
   autosave = true;
 }
 
 setSource('manual');
 let savedScheme = 'muscle';
-try { savedScheme = localStorage.getItem('scheme') === 'finger' ? 'finger' : 'muscle'; } catch { /* default */ }
+try { savedScheme = localStorage.getItem('scheme') === 'digit' ? 'digit' : 'muscle'; } catch { /* default */ }
 setScheme(savedScheme);
 updateButtons();
 loadCalibration();
