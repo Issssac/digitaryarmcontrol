@@ -12,9 +12,13 @@ use super::filter::{Biquad, BUTTER2_Q, BUTTER4_Q};
 const HP_HZ: f32 = 20.0;
 /// Envelope smoothing: higher reacts faster to short pulses, lower ripples less.
 const ENVELOPE_HZ: f32 = 5.0;
-/// Wide and applied twice: the board's clock puts mains a fraction of a hertz
-/// off nominal, where a narrow notch barely attenuates it.
-const NOTCH_Q: f64 = 5.0;
+/// Applied twice: still >80 dB deep across the board's ~0.1 Hz clock offset
+/// while preserving much more EMG passband around 50–70 Hz and 110–125 Hz.
+const NOTCH_Q: f64 = 10.0;
+/// Instantaneous post-HP amplitude (µV) above which a channel is excluded from
+/// that sample's common-average reference so a loose/spiking electrode cannot
+/// smear noise across healthy channels.
+const CAR_SPIKE_UV: f64 = 2000.0;
 /// Inputs beyond 95% of the ADC range are railed: the electrode is off or has
 /// no skin contact.
 const RAIL_UV: f32 = 0.95 * 8_388_607.0 * UV_PER_COUNT;
@@ -75,12 +79,14 @@ impl Chain {
         y
     }
 
-    fn envelope(&mut self, x: f64) -> f32 {
+    /// Applies the mains notches and envelope detector; returns `(filtered_uv, envelope_uv)`.
+    fn notch_and_envelope(&mut self, x: f64) -> (f32, f32) {
         let mut y = x;
         for f in &mut self.notch {
             y = f.process(y);
         }
-        self.lp.process(y.abs()).max(0.0) as f32
+        let env = self.lp.process(y.abs()).max(0.0) as f32;
+        (y as f32, env)
     }
 }
 
@@ -89,18 +95,29 @@ pub struct EmgPipeline {
     mains_hz: f32,
     /// Common-average reference on/off (on for single-row wiring with a shared REF).
     pub car: bool,
+    /// Channels flagged bad (e.g. outlier resting noise): excluded from CAR.
+    excluded: [bool; NUM_CHANNELS],
+    filtered: [f32; NUM_CHANNELS],
     envelope: [f32; NUM_CHANNELS],
 }
 
 impl EmgPipeline {
     pub fn new() -> Self {
         let mains_hz = 60.0;
-        Self { chains: std::array::from_fn(|_| Chain::new(mains_hz)), mains_hz, car: true, envelope: [0.0; NUM_CHANNELS] }
+        Self {
+            chains: std::array::from_fn(|_| Chain::new(mains_hz)),
+            mains_hz,
+            car: true,
+            excluded: [false; NUM_CHANNELS],
+            filtered: [0.0; NUM_CHANNELS],
+            envelope: [0.0; NUM_CHANNELS],
+        }
     }
 
-    /// Reset filter state.
+    /// Reset filter state (keeps CAR and bad-channel exclusion mask).
     pub fn reset_filters(&mut self) {
         self.chains = std::array::from_fn(|_| Chain::new(self.mains_hz));
+        self.filtered = [0.0; NUM_CHANNELS];
         self.envelope = [0.0; NUM_CHANNELS];
     }
 
@@ -109,27 +126,54 @@ impl EmgPipeline {
         self.reset_filters();
     }
 
+    /// Channels excluded from the common-average reference (e.g. outlier resting noise).
+    pub fn set_excluded(&mut self, excluded: [bool; NUM_CHANNELS]) {
+        self.excluded = excluded;
+    }
+
+    pub fn excluded(&self) -> [bool; NUM_CHANNELS] {
+        self.excluded
+    }
+
     pub fn process(&mut self, sample: &Sample) {
         let mut hp = [0.0f64; NUM_CHANNELS];
         for (ch, &x) in sample.iter().enumerate() {
             hp[ch] = self.chains[ch].highpass(x);
         }
         if self.car {
-            let good: Vec<usize> = (0..NUM_CHANNELS).filter(|&ch| self.chains[ch].contact()).collect();
-            if good.len() >= CAR_MIN_CHANNELS {
-                let mean = good.iter().map(|&ch| hp[ch]).sum::<f64>() / good.len() as f64;
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for ch in 0..NUM_CHANNELS {
+                if self.chains[ch].contact() && !self.excluded[ch] && hp[ch].abs() <= CAR_SPIKE_UV {
+                    sum += hp[ch];
+                    count += 1;
+                }
+            }
+            if count >= CAR_MIN_CHANNELS {
+                let mean = sum / count as f64;
                 hp.iter_mut().for_each(|y| *y -= mean);
             }
         }
         for (ch, &y) in hp.iter().enumerate() {
-            let env = self.chains[ch].envelope(y);
-            self.envelope[ch] = if self.chains[ch].contact() { env } else { 0.0 };
+            let (filt, env) = self.chains[ch].notch_and_envelope(y);
+            if self.chains[ch].contact() {
+                self.filtered[ch] = filt;
+                self.envelope[ch] = env;
+            } else {
+                self.filtered[ch] = 0.0;
+                self.envelope[ch] = 0.0;
+            }
         }
     }
 
     /// Per channel: false while the input is railed (electrode off / no contact).
     pub fn contact(&self) -> [bool; NUM_CHANNELS] {
         std::array::from_fn(|ch| self.chains[ch].contact())
+    }
+
+    /// Band-limited, notched EMG in µV (before rectification): feeds covariance features.
+    pub fn filtered(&self) -> [f32; NUM_CHANNELS] {
+        self.filtered
     }
 
     pub fn envelopes(&self) -> [f32; NUM_CHANNELS] {
@@ -246,4 +290,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn excluded_and_spiking_channels_do_not_pollute_car() {
+        let mut p = EmgPipeline::new();
+        let mut sim = Sim::new(77);
+        p.set_excluded([false, false, true, false, false, false, false, false]);
+        for _ in 0..samples(2.0) {
+            let mut s = sim.sample(None);
+            // CH3 has huge non-railed broadband noise (loose contact)
+            s[2] += 800.0 * noise(&mut sim.rng);
+            p.process(&s);
+        }
+        for ch in (0..NUM_CHANNELS).filter(|&c| c != 2) {
+            assert!(p.envelopes()[ch] < 4.0, "CH{ch} polluted by excluded CH2: {:?}", p.envelopes());
+        }
+    }
 }

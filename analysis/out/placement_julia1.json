@@ -1,0 +1,571 @@
+{
+ "recordings": [
+  "julia1"
+ ],
+ "sites": [
+  "Flexors \u00c2\u00b7 thumb side",
+  "Flexors \u00c2\u00b7 middle",
+  "Flexors \u00c2\u00b7 little side",
+  "Extensors \u00c2\u00b7 thumb side",
+  "Extensors \u00c2\u00b7 middle",
+  "Extensors \u00c2\u00b7 little side",
+  "Biceps",
+  "Triceps"
+ ],
+ "movements": [
+  "Thumb flex",
+  "Thumb extend",
+  "Index flex",
+  "Index extend",
+  "Ring + little flex",
+  "Ring + little extend",
+  "Bicep",
+  "Tricep"
+ ],
+ "rest_uV": [
+  6.61,
+  8.78,
+  1.96,
+  2.18,
+  2.15,
+  1.87,
+  1.93,
+  2.02
+ ],
+ "hard_dB": [
+  [
+   9.7,
+   6.8,
+   20.3,
+   29.1,
+   15.9,
+   20.1,
+   20.3,
+   14.1
+  ],
+  [
+   10.0,
+   7.2,
+   16.9,
+   30.4,
+   18.1,
+   22.3,
+   19.8,
+   13.1
+  ],
+  [
+   1.6,
+   -3.6,
+   10.2,
+   17.6,
+   4.7,
+   12.3,
+   9.4,
+   5.0
+  ],
+  [
+   5.9,
+   1.9,
+   21.7,
+   22.1,
+   18.1,
+   19.2,
+   16.0,
+   12.4
+  ],
+  [
+   10.8,
+   4.9,
+   16.9,
+   20.8,
+   20.2,
+   21.3,
+   20.8,
+   13.2
+  ],
+  [
+   12.1,
+   8.6,
+   23.0,
+   22.4,
+   19.1,
+   24.1,
+   21.5,
+   13.6
+  ],
+  [
+   13.7,
+   17.3,
+   24.8,
+   28.3,
+   20.8,
+   27.2,
+   20.4,
+   23.6
+  ],
+  [
+   12.3,
+   5.0,
+   15.2,
+   17.6,
+   20.0,
+   17.6,
+   16.8,
+   12.7
+  ]
+ ],
+ "medium_dB": [
+  [
+   7.1,
+   2.6,
+   18.4,
+   20.0,
+   17.9,
+   14.9,
+   15.0,
+   10.6
+  ],
+  [
+   9.8,
+   4.3,
+   19.5,
+   27.7,
+   12.0,
+   17.1,
+   15.8,
+   11.3
+  ],
+  [
+   5.1,
+   -4.9,
+   10.2,
+   8.6,
+   6.9,
+   6.5,
+   5.3,
+   4.7
+  ],
+  [
+   1.7,
+   -5.2,
+   15.8,
+   15.4,
+   6.1,
+   8.3,
+   6.5,
+   5.8
+  ],
+  [
+   7.1,
+   2.0,
+   15.3,
+   19.2,
+   16.1,
+   15.4,
+   16.1,
+   8.9
+  ],
+  [
+   6.2,
+   3.2,
+   20.1,
+   16.6,
+   13.6,
+   16.0,
+   17.5,
+   6.6
+  ],
+  [
+   10.1,
+   13.9,
+   19.2,
+   22.1,
+   17.7,
+   19.6,
+   17.7,
+   20.5
+  ],
+  [
+   7.4,
+   4.1,
+   15.1,
+   14.8,
+   13.7,
+   14.5,
+   16.1,
+   11.8
+  ]
+ ],
+ "peak_channel": {
+  "Thumb flex": 4,
+  "Thumb extend": 4,
+  "Index flex": 4,
+  "Index extend": 4,
+  "Ring + little flex": 6,
+  "Ring + little extend": 6,
+  "Bicep": 4,
+  "Tricep": 5
+ },
+ "peak_margin_dB": {
+  "Thumb flex": 8.8,
+  "Thumb extend": 8.1,
+  "Index flex": 5.3,
+  "Index extend": 0.4,
+  "Ring + little flex": 0.5,
+  "Ring + little extend": 1.1,
+  "Bicep": 1.1,
+  "Tricep": 2.3
+ },
+ "most_similar_movements": [
+  [
+   "Thumb flex",
+   "Thumb extend",
+   0.996
+  ],
+  [
+   "Ring + little flex",
+   "Tricep",
+   0.995
+  ],
+  [
+   "Ring + little flex",
+   "Ring + little extend",
+   0.992
+  ],
+  [
+   "Ring + little extend",
+   "Tricep",
+   0.987
+  ],
+  [
+   "Thumb flex",
+   "Ring + little extend",
+   0.984
+  ],
+  [
+   "Thumb extend",
+   "Ring + little flex",
+   0.983
+  ]
+ ],
+ "most_similar_movements_medium": [
+  [
+   "Thumb flex",
+   "Ring + little flex",
+   0.996
+  ],
+  [
+   "Ring + little flex",
+   "Tricep",
+   0.988
+  ],
+  [
+   "Thumb flex",
+   "Tricep",
+   0.987
+  ],
+  [
+   "Ring + little flex",
+   "Ring + little extend",
+   0.985
+  ],
+  [
+   "Thumb flex",
+   "Ring + little extend",
+   0.983
+  ],
+  [
+   "Thumb flex",
+   "Index flex",
+   0.982
+  ]
+ ],
+ "medium_vs_hard_same_movement_cos": {
+  "Thumb flex": 0.984,
+  "Thumb extend": 0.988,
+  "Index flex": 0.913,
+  "Index extend": 0.958,
+  "Ring + little flex": 0.993,
+  "Ring + little extend": 0.985,
+  "Bicep": 0.998,
+  "Tricep": 0.989
+ },
+ "channel_profile_corr": [
+  [
+   1.0,
+   0.86,
+   0.61,
+   0.38,
+   0.88,
+   0.81,
+   0.86,
+   0.79
+  ],
+  [
+   0.86,
+   1.0,
+   0.78,
+   0.64,
+   0.71,
+   0.93,
+   0.77,
+   0.96
+  ],
+  [
+   0.61,
+   0.78,
+   1.0,
+   0.55,
+   0.68,
+   0.85,
+   0.72,
+   0.81
+  ],
+  [
+   0.38,
+   0.64,
+   0.55,
+   1.0,
+   0.33,
+   0.65,
+   0.6,
+   0.6
+  ],
+  [
+   0.88,
+   0.71,
+   0.68,
+   0.33,
+   1.0,
+   0.78,
+   0.84,
+   0.74
+  ],
+  [
+   0.81,
+   0.93,
+   0.85,
+   0.65,
+   0.78,
+   1.0,
+   0.87,
+   0.89
+  ],
+  [
+   0.86,
+   0.77,
+   0.72,
+   0.6,
+   0.84,
+   0.87,
+   1.0,
+   0.71
+  ],
+  [
+   0.79,
+   0.96,
+   0.81,
+   0.6,
+   0.74,
+   0.89,
+   0.71,
+   1.0
+  ]
+ ],
+ "channel_logmav_corr": [
+  [
+   1.0,
+   0.79,
+   0.77,
+   0.74,
+   0.77,
+   0.86,
+   0.84,
+   0.76
+  ],
+  [
+   0.79,
+   1.0,
+   0.75,
+   0.71,
+   0.8,
+   0.86,
+   0.78,
+   0.92
+  ],
+  [
+   0.77,
+   0.75,
+   1.0,
+   0.84,
+   0.75,
+   0.82,
+   0.77,
+   0.75
+  ],
+  [
+   0.74,
+   0.71,
+   0.84,
+   1.0,
+   0.69,
+   0.79,
+   0.71,
+   0.74
+  ],
+  [
+   0.77,
+   0.8,
+   0.75,
+   0.69,
+   1.0,
+   0.78,
+   0.75,
+   0.78
+  ],
+  [
+   0.86,
+   0.86,
+   0.82,
+   0.79,
+   0.78,
+   1.0,
+   0.92,
+   0.83
+  ],
+  [
+   0.84,
+   0.78,
+   0.77,
+   0.71,
+   0.75,
+   0.92,
+   1.0,
+   0.75
+  ],
+  [
+   0.76,
+   0.92,
+   0.75,
+   0.74,
+   0.78,
+   0.83,
+   0.75,
+   1.0
+  ]
+ ],
+ "acc_all": {
+  "hard_half": 0.77,
+  "medium_to_hard": 0.503
+ },
+ "acc_drop_one": {
+  "CH1": {
+   "hard_half": 0.754,
+   "medium_to_hard": 0.533
+  },
+  "CH2": {
+   "hard_half": 0.766,
+   "medium_to_hard": 0.466
+  },
+  "CH3": {
+   "hard_half": 0.71,
+   "medium_to_hard": 0.457
+  },
+  "CH4": {
+   "hard_half": 0.706,
+   "medium_to_hard": 0.378
+  },
+  "CH5": {
+   "hard_half": 0.85,
+   "medium_to_hard": 0.557
+  },
+  "CH6": {
+   "hard_half": 0.752,
+   "medium_to_hard": 0.499
+  },
+  "CH7": {
+   "hard_half": 0.771,
+   "medium_to_hard": 0.523
+  },
+  "CH8": {
+   "hard_half": 0.808,
+   "medium_to_hard": 0.486
+  }
+ },
+ "greedy_forward_hard_half": [
+  [
+   "CH3",
+   0.516
+  ],
+  [
+   "CH4",
+   0.677
+  ],
+  [
+   "CH1",
+   0.822
+  ],
+  [
+   "CH6",
+   0.852
+  ],
+  [
+   "CH2",
+   0.875
+  ],
+  [
+   "CH7",
+   0.869
+  ],
+  [
+   "CH8",
+   0.85
+  ],
+  [
+   "CH5",
+   0.77
+  ]
+ ],
+ "medium_checks": {
+  "Thumb flex": {
+   "other": 4854,
+   "clean": 1278
+  },
+  "Thumb extend": {
+   "other": 13270,
+   "clean": 1247,
+   "weak": 47
+  },
+  "Index flex": {
+   "other": 4717,
+   "clean": 1257,
+   "strong": 337,
+   "weak": 1679
+  },
+  "Index extend": {
+   "other": 12161,
+   "weak": 1534
+  },
+  "Ring + little flex": {
+   "weak": 204,
+   "other": 1668,
+   "strong": 59,
+   "clean": 1261
+  },
+  "Ring + little extend": {
+   "clean": 1298,
+   "other": 2669
+  },
+  "Bicep": {
+   "other": 23346,
+   "weak": 4999,
+   "clean": 1268
+  },
+  "Tricep": {
+   "other": 7511,
+   "weak": 2354,
+   "clean": 1251,
+   "strong": 301
+  }
+ }
+}

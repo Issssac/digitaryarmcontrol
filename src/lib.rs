@@ -45,7 +45,11 @@ const GRIPPER_TOLERANCE: f32 = deg(0.3);
 /// 4: gestures keep their hard-round samples (for the compound coupling).
 /// 5: the finger grid became the digit array (eight bipolar pairs). A v4 file
 /// still gives back its muscle-pair calibration, which is saved the same way.
-const CALIBRATION_VERSION: u32 = 5;
+/// 6: compound movements learned in live use are saved too, and the digit array
+/// went back to one electrode per site against a shared REF. A v5 file gives back
+/// its muscle-pair calibration (re-learned in the clipped z-score activation);
+/// its digit calibration was made with bipolar pairs, so it is dropped.
+const CALIBRATION_VERSION: u32 = 7;
 
 /// Both schemes' calibrations, as saved by `export_calibration`.
 #[derive(Serialize, Deserialize)]
@@ -55,12 +59,22 @@ struct SavedCalibration {
     digit: gesture::Calibration<NUM_DIGITS>,
 }
 
-/// The start of a v4 file: its muscle-pair calibration (the finger grid's after it is dropped).
+/// A v6 file: both calibrations, before the classifier's recordings.
 #[derive(Deserialize)]
-struct SavedCalibrationV4 {
+struct SavedCalibrationV6 {
     #[allow(dead_code)]
     version: u32,
-    muscle: gesture::Calibration<NUM_GESTURES>,
+    muscle: gesture::CalibrationV6<NUM_GESTURES>,
+    digit: gesture::CalibrationV6<NUM_DIGITS>,
+}
+
+/// The start of a v4 or v5 file: its muscle-pair calibration (what follows, the
+/// finger grid's or the bipolar digit array's, is dropped).
+#[derive(Deserialize)]
+struct SavedMuscleOnly {
+    #[allow(dead_code)]
+    version: u32,
+    muscle: gesture::CalibrationV5<NUM_GESTURES>,
 }
 
 /// Runs `$e` with `$c` bound to the control of the current scheme (muscle pairs or the digit array).
@@ -97,7 +111,7 @@ pub struct App {
     emg: EmgPipeline,
     /// Muscle-pair control (when `digit_mode` is off).
     gestures: GestureControl<NUM_GESTURES>,
-    /// Digit-array control (eight bipolar pairs) when `digit_mode` is on.
+    /// Digit-array control (eight electrodes, shared REF) when `digit_mode` is on.
     digits: GestureControl<NUM_DIGITS>,
     digit_mode: bool,
     drift: bool,
@@ -318,10 +332,15 @@ impl App {
         let (emg, digits, gestures, digit_mode) = (&mut self.emg, &mut self.digits, &mut self.gestures, self.digit_mode);
         self.parser.push(bytes, |s| {
             emg.process(s);
+            // a bad contact found at rest stays out of the channel average
             if digit_mode {
+                digits.push_filtered(&emg.filtered());
                 digits.process(&emg.envelopes(), &emg.contact());
+                emg.set_excluded(digits.bad_channels());
             } else {
+                gestures.push_filtered(&emg.filtered());
                 gestures.process(&emg.envelopes(), &emg.contact());
+                emg.set_excluded(gestures.bad_channels());
             }
         });
     }
@@ -354,10 +373,15 @@ impl App {
                 self.gestures.restore(saved.muscle);
                 self.digits.restore(saved.digit);
             }
-            // the old finger grid's calibration means nothing to the digit array
-            4 => {
-                let saved: SavedCalibrationV4 = bincode::deserialize(bytes).map_err(err)?;
-                self.gestures.restore(saved.muscle);
+            6 => {
+                let saved: SavedCalibrationV6 = bincode::deserialize(bytes).map_err(err)?;
+                self.gestures.restore(saved.muscle.into());
+                self.digits.restore(saved.digit.into());
+            }
+            // v4's finger grid and v5's bipolar digit array mean nothing to today's digit array
+            4 | 5 => {
+                let saved: SavedMuscleOnly = bincode::deserialize(bytes).map_err(err)?;
+                self.gestures.restore(saved.muscle.into());
             }
             _ => {
                 return Err(JsValue::from_str(&format!(
@@ -397,15 +421,28 @@ impl App {
         }
     }
 
+    /// Per channel: 1 if the rest recording found a bad contact there (left out of decoding).
+    pub fn bad_channels(&self) -> Vec<u8> {
+        active!(self, c => c.bad_channels()).map(u8::from).to_vec()
+    }
+
+    /// Decode with the movement classifier (on) or by the patterns alone (off).
+    pub fn set_classifier(&mut self, on: bool) {
+        self.gestures.use_lda = on;
+        self.digits.use_lda = on;
+    }
+
     /// Per channel: 1 if the electrode has contact, 0 while its input is railed.
     pub fn contact(&self) -> Vec<u8> {
         self.emg.contact().map(u8::from).to_vec()
     }
 
     /// Common-average reference: on for single-row wiring with a shared REF.
-    /// Choosing a scheme sets it (on for muscle pairs, off for the bipolar digit array).
+    /// Choosing a scheme turns it on (both use a shared REF).
     pub fn set_car(&mut self, on: bool) {
         self.emg.car = on;
+        self.gestures.car = on;
+        self.digits.car = on;
     }
 
     pub fn car(&self) -> bool {
@@ -425,8 +462,8 @@ impl App {
 
     // ---- scheme -------------------------------------------------------------
 
-    /// Digit array (on: eight bipolar pairs, no common-average reference) or
-    /// muscle pairs (off: single-row cable with a shared REF, common average on).
+    /// Digit array (on) or muscle pairs (off). Both are a single-row cable with
+    /// a shared REF, so the common average is on either way.
     pub fn set_digit_mode(&mut self, on: bool) {
         if on != self.digit_mode {
             self.digits.cancel();
@@ -435,7 +472,7 @@ impl App {
             self.gestures.reset_state();
         }
         self.digit_mode = on;
-        self.emg.car = !on;
+        self.set_car(true);
     }
 
     pub fn digit_mode(&self) -> bool {
@@ -582,6 +619,22 @@ impl App {
                 [b.stasis, b.rest_exit, b.level].map(|v| v as f32)
             })
             .collect())
+    }
+
+    /// Compound movements the current scheme learned in live use: [movement,
+    /// movement, share of the first] for each.
+    pub fn compounds(&self) -> Vec<f32> {
+        active!(self, c => c.compounds()).into_iter().flat_map(|(a, b, mix)| [a as f32, b as f32, mix as f32]).collect()
+    }
+
+    /// Changes whenever either scheme learns or refines a compound (time to save).
+    pub fn compound_updates(&self) -> u32 {
+        self.gestures.compound_updates().wrapping_add(self.digits.compound_updates())
+    }
+
+    /// Forgets the current scheme's learned compound movements.
+    pub fn clear_compounds(&mut self) {
+        active!(mut self, c => c.clear_compounds());
     }
 
     /// Per gesture: [calibrated, faint level, isolation, hits, trials, level, stasis, mixed].

@@ -33,7 +33,7 @@ const SIM_LEVEL = 0.7;
 const SIM_PULSE = 0.5;
 const UI_INTERVAL_MS = 66;
 
-// Digit array (see digit-array.svg): eight bipolar pairs. CH1–3 on the finger
+// Digit array (see digit-array.svg): eight electrodes against a shared REF. CH1–3 on the finger
 // flexors and CH4–6 on the finger extensors, each from the thumb side to the
 // little-finger side, CH7 on the biceps, CH8 on the triceps. Movements in the
 // decoder's order (DIGIT_AXES in gesture.rs for the axis each drives).
@@ -326,7 +326,7 @@ const channels = Array.from({ length: NUM_CH }, (_, ch) => {
 
 /**
  * Per channel: its strongest calibrated movement and that movement's joint (for
- * the digit array, its site comes first, since each pair has a fixed muscle).
+ * the digit array, its site comes first, since each electrode has a fixed muscle).
  */
 function refreshRoles() {
   const learned = app.channel_gestures();
@@ -388,7 +388,6 @@ function drawCalPills() {
 function setScheme(s) {
   if (coach.active) stopCalibration('scheme changed');
   scheme = s;
-  // the digit array is bipolar: each pair cancels the common noise, so no channel averaging
   app.set_digit_mode(isDigit());
   document.body.classList.toggle('digit', isDigit());
   $('scheme').value = s;
@@ -411,11 +410,12 @@ let sim = null;
 
 const setBci = (msg) => { $('bci-status').textContent = msg; };
 
-// 60 Hz mains. Muscle pairs use a single-row cable sharing one REF electrode
+// 60 Hz mains. Both schemes use a single-row cable sharing one REF electrode
 // (common wiring, with the channel average subtracted to cancel the hum it puts
-// on every channel); the digit array uses a pair per channel (bipolar, SRB2 off).
+// on every channel). The digit array used a pair per channel (bipolar) before;
+// one electrode per site covers the same muscles with half the electrodes.
 app.set_mains(60);
-const wiringFor = () => (isDigit() ? 'bipolar' : 'common');
+const wiringFor = () => 'common';
 
 const streaming = () => Boolean(sim || (serial && serial.binary));
 
@@ -469,10 +469,11 @@ $('connect').onclick = async () => {
   updateButtons();
 };
 
-/** A simulated Cyton wired for the current scheme (bipolar pairs see little common noise and crosstalk). */
+/** A simulated Cyton wired for the current scheme (shared REF: common hum on every channel). */
 function startSimulator() {
   app.reset_stream();
-  sim = isDigit() ? new CytonSimulator({ differential: true, crosstalk: false, patterns: DIGIT_PATTERNS }) : new CytonSimulator();
+  // the digit patterns already spill onto neighbouring sites, so no extra crosstalk
+  sim = isDigit() ? new CytonSimulator({ crosstalk: false, patterns: DIGIT_PATTERNS }) : new CytonSimulator();
 }
 
 $('simulate').onclick = () => {
@@ -1015,14 +1016,13 @@ function runMeta(name, mode, calibrationBefore) {
     wiring: wiringFor(),
     sampleRate: 250,
     uvPerCount: 4.5 / 24 / 8388607 * 1e6,
-    cytonChannelSettings: 'gain 24, normal input, bias on, SRB1 off, '
-      + `SRB2 ${digit ? 'off (bipolar pairs)' : 'on (shared REF)'}`,
+    cytonChannelSettings: 'gain 24, normal input, bias on, SRB1 off, SRB2 on (shared REF)',
     mains: 60,
     car: app.car(),
     filterChain: [
       '20 Hz 4th-order Butterworth high-pass per channel',
       app.car() ? 'common-average reference over channels with contact (3 or more)' : 'no common-average reference',
-      'notch at mains (60 Hz) twice and at 120 Hz twice, Q 5',
+      'notch at mains (60 Hz) twice and at 120 Hz twice, Q 10',
       'full-wave rectify',
       '5 Hz 2nd-order Butterworth low-pass: the envelope',
     ],
@@ -1061,6 +1061,8 @@ function recordEnd(outcome) {
     bands: [...app.gesture_bands()],
     bandFields: ['stasis', 'restExit', 'level'],
     channelGestures: [...app.channel_gestures()],
+    compounds: [...app.compounds()],
+    compoundFields: ['movement', 'movement', 'shareOfFirst'],
     stats: [...app.stats()],
     settings: panelSettings(),
     calibration: toBase64(app.export_calibration()),
@@ -1098,7 +1100,7 @@ function finishResults() {
     if (!cal) return `<div class="res gres">${name}<span class="bad">skipped</span><span></span><span></span><span></span>${redo}</div>`;
     const training = trials ? `<span class="${grade(hits / trials, 0.6, 0.4)}">${hits}/${trials} hits</span>` : '<span>—</span>';
     return `<div class="res gres">${name}<span class="mono">${Math.round(faint * 100)}%</span>`
-      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? `The faint round looked more like another ${noun}, so it was not used` : ''}">`
+      + `<span class="${mixed ? 'bad' : grade(isolation, 0.9, 0.7)}" title="${mixed ? `Most of the faint round didn't match this ${noun}'s pattern; only the moments that did were used` : ''}">`
       + `${Math.round(isolation * 100)}%${mixed ? ' · mixed' : ''}</span>${training}`
       + `<span class="mono">${Math.round(level * 100)}%</span>${redo}</div>`;
   });
@@ -1106,7 +1108,7 @@ function finishResults() {
     + '<span>isolated</span><span>training</span><span>level</span><span></span></div>' + rows.join('');
   $('coach-step').textContent = `${SET.label} complete`;
   $('coach-detail').textContent = 'Faint: how far below the ceiling (your half-strength contraction) the faint round read. '
-    + `Isolated: how often that faint intention read as the right ${noun} ("mixed": it looked like another one, so it wasn't used). `
+    + `Isolated: how often that faint intention read as the right ${noun} ("mixed": most of it didn't match, so only the moments that did were used). `
     + 'Level: the power that now drives its axis at full speed; training stepped it down after two hits in a row and up after a miss. '
     + `Train only practises again; Redo recalibrates one ${noun}.`;
 }
@@ -1298,16 +1300,19 @@ function updateUi(now) {
   const env = app.envelopes();
   const act = app.activations();
   const contact = app.contact();
+  const bad = app.bad_channels();
   // every channel is recorded for every pattern in phase 1
   const cal = SET.status();
   const recording = cal.length > 0 && cal[2] === PHASE.RECORD && cal[0] !== FSTEP.TRAIN;
   channels.forEach((c, ch) => {
     c.fill.style.width = `${act[ch] * 100}%`;
-    c.uv.textContent = contact[ch] ? `${env[ch].toFixed(1)}µV` : 'off';
-    c.row.classList.toggle('nocontact', !contact[ch]);
-    c.row.title = contact[ch]
-      ? siteName(ch)
-      : `${siteName(ch)}: no contact (input railed). Press the electrode down or re-gel it.`;
+    c.uv.textContent = !contact[ch] ? 'off' : bad[ch] ? `${env[ch].toFixed(1)}µV bad` : `${env[ch].toFixed(1)}µV`;
+    c.row.classList.toggle('nocontact', !contact[ch] || !!bad[ch]);
+    c.row.title = !contact[ch]
+      ? `${siteName(ch)}: no contact (input railed). Press the electrode down or re-gel it.`
+      : bad[ch]
+        ? `${siteName(ch)}: far noisier than the other channels at rest (a bad contact), so it is left out. Re-gel it and calibrate again.`
+        : siteName(ch);
     c.row.classList.toggle('calibrating', recording);
   });
 
@@ -1335,6 +1340,8 @@ function updateUi(now) {
   pill.className = `pill ${source === 'emg' ? (uncal ? 'warn' : 'emg') : ''}`;
 }
 
+let compoundUpdates = 0;
+
 function frame(now) {
   const dt = (now - last) / 1000;
   last = now;
@@ -1352,6 +1359,12 @@ function frame(now) {
 
   if (now - lastUi >= UI_INTERVAL_MS) {
     lastUi = now;
+    // compound movements are learned while it's in use: keep them
+    const updates = app.compound_updates();
+    if (updates !== compoundUpdates) {
+      compoundUpdates = updates;
+      saveSoon();
+    }
     updateUi(now);
     updateArm();
   }

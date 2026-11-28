@@ -109,7 +109,7 @@
         <h2>Control scheme</h2>
         <select id="scheme" class="full">
           <option value="muscle" selected>Muscle pairs</option>
-          <option value="digit">Digit array (8 bipolar pairs)</option>
+          <option value="digit">Digit array (8 electrodes, shared REF)</option>
         </select>
         <!-- only when saving or loading the calibration fails -->
         <p class="hint" id="saved-status"></p>
@@ -117,7 +117,7 @@
 
       <section>
         <h2>Calibration</h2>
-        <p class="hint digit-only">CH1–3 finger flexors, CH4–6 finger extensors (thumb side → little side), CH7 biceps, CH8 triceps, each a bipolar pair. Thumb → gripper, index → tip, ring + little → base, bicep / tricep → reach.</p>
+        <p class="hint digit-only">CH1–3 finger flexors, CH4–6 finger extensors (thumb side → little side), CH7 biceps, CH8 triceps, one electrode each against REF on the elbow bone. Thumb → gripper, index → tip, ring + little → base, bicep / tricep → reach.</p>
         <div class="row">
           <button id="gcal" class="primary" title="Rest in three positions, each movement strong → half → faint, then training (about 6 minutes)">Calibrate + train</button>
           <button id="gtrain" title="Practise every movement again: the level steps down as you get consistent">Train only</button>

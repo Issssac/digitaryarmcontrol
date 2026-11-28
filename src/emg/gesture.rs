@@ -31,7 +31,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::cyton::{NUM_CHANNELS, SAMPLE_RATE};
-use super::decoder::{nnls, Features};
+use super::decoder::{nnls, raw_features, NNLS_MAX, with_effort, CovTracker, Features, LdaModel, COV_WIN, CovWindow, MAX_LDA_CLASSES, NUM_COV, NUM_FEATS};
 use crate::arm::NUM_JOINTS;
 
 pub const NUM_GESTURES: usize = 7;
@@ -41,7 +41,7 @@ pub const NUM_GESTURES: usize = 7;
 pub const AXES: [(usize, f32); NUM_GESTURES] =
     [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0), (3, -1.0)];
 
-/// Digit array: eight bipolar pairs, CH1–3 on the finger flexors and CH4–6 on
+/// Digit array: eight electrodes against a shared REF, CH1–3 on the finger flexors and CH4–6 on
 /// the finger extensors (thumb side to little-finger side), CH7 biceps, CH8
 /// triceps. Its movements, in order: thumb flex / extend, index flex / extend,
 /// ring + little flex / extend, bicep, tricep.
@@ -57,6 +57,10 @@ pub const POSTURES: usize = 3;
 /// Posture is judged on an envelope averaged this long, so a gesture pulse
 /// doesn't read as a change of posture.
 const POSTURE_TAU_S: f32 = 0.5;
+/// The posture fit runs on every this-many-th sample (the slow envelope barely moves in between).
+const POSTURE_EVERY: u32 = 10;
+/// Filler for the unused slots of a fixed-size list of patterns.
+const NO_PATTERN: Features = [0.0; NUM_CHANNELS];
 /// Fit ridges, relative to each pattern's size (see finger.rs).
 const GESTURE_RIDGE: f64 = 0.02;
 const POSTURE_RIDGE: f64 = 0.001;
@@ -92,9 +96,45 @@ const DEFAULT_GAIN: f32 = 1.0;
 const COMPOUND_SIGMAS: f64 = 2.0;
 const COMPOUND_EXIT_SIGMAS: f64 = 1.0;
 const COMPOUND_COMMIT_S: f32 = 0.1;
+/// Calibration: a sample is a hit when it points within this cosine of its
+/// own movement's pattern; the rest (wandering moments, the wrong
+/// contraction) are misses and don't shape the pattern. Only its own pattern
+/// is asked: movements that look alike (fingers on one forearm read 0.96–0.98
+/// of each other) would otherwise throw each other's clean holds away.
+const HIT_COS: f64 = 0.8;
+/// A round shapes the pattern only if at least this share of it was hits.
+const ROUND_MIN_HITS: f64 = 0.25;
+/// Live compound learning: a pair decoded together for at least LEARN_MIN_S is
+/// one episode. Its activation, per unit of the two single-movement
+/// predictions, becomes a compound pattern when the singles leave at least
+/// COMPOUND_RESIDUAL of it unexplained (the two don't simply add up) and it
+/// isn't really one of the two (cosine above COMPOUND_SINGLE_COS). Later
+/// episodes of the pair refine it, as a running mean over the last LEARN_MEMORY.
+const LEARN_MIN_S: f32 = 0.4;
+const COMPOUND_RESIDUAL: f64 = 0.12;
+const COMPOUND_SINGLE_COS: f64 = 0.97;
+const LEARN_MEMORY: f64 = 8.0;
 /// Floor on a coupling's standard deviation, so a very clean calibration can't
 /// make every flicker of the runner-up count as a compound.
 const COUPLING_MIN_SD: f64 = 0.02;
+/// Which movement it is (see decoder.rs): a shrinkage LDA over each 200 ms
+/// window's relative log-RMS and inter-channel correlations, trained on the
+/// calibration holds and the rest postures. The patterns say how hard; the
+/// classifier gates each movement by how sure it is that this is the one (and
+/// not a rest). Shrinkage of its within-class covariance, and the gate's
+/// temperature in discriminant units.
+const LDA_SHRINK: f64 = 0.25;
+const LDA_TEMP: f64 = 2.0;
+/// Calibration keeps the classifier features of every FEAT_EVERY-th sample.
+const FEAT_EVERY: usize = 10;
+/// Each hard and half-strength recording is this many separate holds (GESTURE_S
+/// in all), so the classifier sees more than one way of making the movement.
+const HOLDS: u32 = 2;
+/// Contact check at the limp rest: a channel whose envelope is BAD_RATIO times
+/// the median channel's (and above BAD_MIN_UV) has a bad contact. It is left
+/// out of decoding and of the channel average.
+const BAD_RATIO: f64 = 6.0;
+const BAD_MIN_UV: f64 = 10.0;
 
 // Signal checks.
 /// Hard contraction: RMS of the positive z-scores across the electrodes.
@@ -164,6 +204,21 @@ fn percentile(mut v: Vec<f64>, p: f64) -> f64 {
     }
     let i = ((v.len() - 1) as f64 * p).round() as usize;
     *v.select_nth_unstable_by(i, f64::total_cmp).1
+}
+
+/// Channels far above the others at rest: BAD_RATIO times the median channel and above BAD_MIN_UV.
+fn outliers(mean: &Features) -> [bool; NUM_CHANNELS] {
+    let mut v: Vec<f64> = mean.iter().copied().filter(|&m| m > 0.0).collect();
+    if v.len() < 3 {
+        return [false; NUM_CHANNELS];
+    }
+    v.sort_by(f64::total_cmp);
+    let med = v[v.len() / 2];
+    std::array::from_fn(|c| mean[c] > BAD_RATIO * med && mean[c] > BAD_MIN_UV)
+}
+
+fn cosine(a: &Features, b: &Features, usable: &[bool; NUM_CHANNELS]) -> f64 {
+    dot(a, b, usable) / (dot(a, a, usable) * dot(b, b, usable)).sqrt().max(1e-12)
 }
 
 /// Unit vector along `x` over the usable channels; None if it is ~zero.
@@ -299,7 +354,7 @@ struct GestureData {
     hard_rec: Vec<Features>,
     /// z samples of the half-strength contraction (they define the ceiling).
     medium: Vec<Features>,
-    /// Unit patterns from the half-strength and faint rounds.
+    /// Not used any more; kept so calibrations saved with it still load.
     shapes: Vec<Features>,
     /// z samples of the faint round (for the level and isolation).
     faint: Vec<Features>,
@@ -315,6 +370,72 @@ struct RestModel {
     seen: [bool; NUM_CHANNELS],
 }
 
+/// Two movements made together, learned in live use: the activation they make
+/// per unit of their combined power, and the share of it that is `pair.0`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Compound {
+    pair: (usize, usize),
+    pattern: Features,
+    mix: f64,
+    /// Episodes it was learned from (capped at LEARN_MEMORY).
+    n: f64,
+}
+
+/// The pair being decoded together right now, and what it has made so far.
+#[derive(Default)]
+struct Episode {
+    pair: Option<(usize, usize)>,
+    sum: Features,
+    mix: f64,
+    /// Combined single-movement power of the two, summed over the episode.
+    total: f64,
+    n: u32,
+    /// A channel lost contact during it, so its activation is incomplete.
+    lost: bool,
+}
+
+/// The classifier's input over one calibration recording: the filtered
+/// signal's 200 ms covariance at every FEAT_EVERY-th sample (NUM_COV each,
+/// flattened; NaN while the window was still filling). Kept as covariances,
+/// not features, so the features follow the channels in use when it is fitted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct FeatRec {
+    /// The movement, or G + posture for a rest.
+    class: usize,
+    /// 0 rest, 1 hard, 2 half-strength, 3 faint.
+    kind: u8,
+    data: Vec<f32>,
+}
+
+impl FeatRec {
+    fn rows(&self) -> impl Iterator<Item = CovWindow> + '_ {
+        self.data.chunks_exact(NUM_COV).filter(|r| !r[0].is_nan()).map(|r| std::array::from_fn(|d| r[d] as f64))
+    }
+
+    /// Covariance at sample `i` of the recording.
+    fn at(&self, i: usize) -> Option<CovWindow> {
+        let k = i / FEAT_EVERY;
+        let r = self.data.get(k * NUM_COV..(k + 1) * NUM_COV)?;
+        (!r[0].is_nan()).then(|| std::array::from_fn(|d| r[d] as f64))
+    }
+}
+
+fn kind_of(step: Step) -> u8 {
+    match step {
+        Step::Rest(_) => 0,
+        Step::Hard(_) => 1,
+        Step::Medium(_) => 2,
+        Step::Faint(_) | Step::Train(_) => 3,
+    }
+}
+
+/// The fitted classifier, and the limp rest's mean log-RMS its effort feature is measured from.
+#[derive(Clone)]
+struct Lda {
+    model: LdaModel,
+    rest_mlr: f64,
+}
+
 struct Run {
     step: Step,
     phase: Phase,
@@ -326,6 +447,10 @@ struct Run {
     /// Clean samples of the current Record phase: envelopes for the limp rest,
     /// raw z for the other postures, posture-corrected z for the gestures.
     rec: Vec<Features>,
+    /// Classifier features of `rec` (see FeatRec).
+    feats: Vec<f32>,
+    /// Holds of the current hard or half-strength recording already made.
+    holds: u32,
     /// Decided when a recording finishes, entered after its relax phase.
     next: Option<Step>,
     /// Rest postures in this run (all of them, or none for a single gesture / training).
@@ -364,6 +489,22 @@ pub struct GestureControl<const G: usize> {
     contact: [bool; NUM_CHANNELS],
     recent: [f32; NUM_CHANNELS],
     z: Features,
+    /// What the patterns are fitted to this sample: z, with the posture taken
+    /// out when decoding by the patterns alone.
+    x: Features,
+    /// Samples processed, for the posture fit (every POSTURE_EVERY-th).
+    tick: u32,
+    /// A compound was learned: the noise floors and coupling are worked out
+    /// again once nothing is moving, so the recompute never stalls a movement.
+    refit_due: bool,
+    /// Compound patterns learned in live use.
+    compounds: Vec<Compound>,
+    episode: Episode,
+    /// Bumped whenever a compound is learned or refined, so the page knows to save.
+    compound_updates: u32,
+    /// Smoothed powers from the single movements alone (no compounds in the fit):
+    /// what compound learning watches.
+    singles: [f64; G],
     power: [f64; G],
     /// Driving its axis (with hysteresis down to stasis).
     active: [bool; G],
@@ -378,6 +519,19 @@ pub struct GestureControl<const G: usize> {
     compound_t: f32,
     run: Option<Run>,
     inputs: [f32; NUM_JOINTS],
+    /// Rolling covariance of the filtered (not rectified) signal, for the classifier.
+    cov: CovTracker,
+    /// Classifier features of the current sample (raw effort slot), once the window is full.
+    feat: Option<[f64; NUM_FEATS]>,
+    feats: Vec<FeatRec>,
+    lda: Option<Lda>,
+    /// Use the classifier when there is one (off: the patterns alone, as before).
+    pub use_lda: bool,
+    /// Learn compound patterns in live use (only when decoding by the patterns alone).
+    pub learn_in_use: bool,
+    /// The pipeline subtracts the channel average, so a bad contact found at
+    /// rest spoiled every channel: the rest is recorded again without it.
+    pub car: bool,
 }
 
 /// Everything calibration and training learned, to save and restore it.
@@ -396,6 +550,73 @@ pub struct Calibration<const G: usize> {
     level: [f64; G],
     #[serde(with = "fixed")]
     report: [GestureReport; G],
+    compounds: Vec<Compound>,
+    feats: Vec<FeatRec>,
+}
+
+/// A calibration as format 6 saved it: before the classifier's features.
+#[derive(Deserialize)]
+pub struct CalibrationV6<const G: usize> {
+    rest: Option<RestModel>,
+    postures: Vec<Features>,
+    posture_rest: Vec<Vec<Features>>,
+    #[serde(with = "fixed")]
+    data: [GestureData; G],
+    #[serde(with = "fixed")]
+    templates: [Option<Features>; G],
+    #[serde(with = "fixed")]
+    level: [f64; G],
+    #[serde(with = "fixed")]
+    report: [GestureReport; G],
+    compounds: Vec<Compound>,
+}
+
+impl<const G: usize> From<CalibrationV6<G>> for Calibration<G> {
+    fn from(c: CalibrationV6<G>) -> Self {
+        Calibration {
+            rest: c.rest,
+            postures: c.postures,
+            posture_rest: c.posture_rest,
+            data: c.data,
+            templates: c.templates,
+            level: c.level,
+            report: c.report,
+            compounds: c.compounds,
+            feats: Vec::new(),
+        }
+    }
+}
+
+/// A calibration as format 5 (and 4) saved it: before compounds were learned.
+#[derive(Deserialize)]
+pub struct CalibrationV5<const G: usize> {
+    rest: Option<RestModel>,
+    postures: Vec<Features>,
+    posture_rest: Vec<Vec<Features>>,
+    #[serde(with = "fixed")]
+    data: [GestureData; G],
+    #[serde(with = "fixed")]
+    templates: [Option<Features>; G],
+    #[serde(with = "fixed")]
+    level: [f64; G],
+    #[serde(with = "fixed")]
+    report: [GestureReport; G],
+}
+
+impl<const G: usize> From<CalibrationV5<G>> for Calibration<G> {
+    fn from(c: CalibrationV5<G>) -> Self {
+        Calibration {
+            rest: c.rest,
+            postures: c.postures,
+            posture_rest: c.posture_rest,
+            data: c.data,
+            templates: c.templates,
+            level: c.level,
+            report: c.report,
+            compounds: Vec::new(),
+            feats: Vec::new(),
+        }
+    }
 }
 
 /// Serde for `[T; N]` of any length, as a tuple of N elements (serde's own
@@ -468,6 +689,13 @@ impl<const G: usize> GestureControl<G> {
             contact: [true; NUM_CHANNELS],
             recent: [0.0; NUM_CHANNELS],
             z: [0.0; NUM_CHANNELS],
+            tick: 0,
+            refit_due: false,
+            x: [0.0; NUM_CHANNELS],
+            compounds: Vec::new(),
+            episode: Episode::default(),
+            compound_updates: 0,
+            singles: [0.0; G],
             power: [0.0; G],
             active: [false; G],
             rising_t: [0.0; G],
@@ -476,6 +704,13 @@ impl<const G: usize> GestureControl<G> {
             compound_t: 0.0,
             run: None,
             inputs: [0.0; NUM_JOINTS],
+            cov: CovTracker::new(),
+            feat: None,
+            feats: Vec::new(),
+            lda: None,
+            use_lda: true,
+            learn_in_use: true,
+            car: false,
         }
     }
 
@@ -488,6 +723,8 @@ impl<const G: usize> GestureControl<G> {
             templates: self.templates,
             level: self.level,
             report: self.report,
+            compounds: self.compounds.clone(),
+            feats: self.feats.clone(),
         }
     }
 
@@ -501,7 +738,15 @@ impl<const G: usize> GestureControl<G> {
         self.templates = cal.templates;
         self.level = cal.level;
         self.report = cal.report;
-        self.update_stasis();
+        self.compounds = cal
+            .compounds
+            .into_iter()
+            .filter(|k| k.pair.0 < G && k.pair.1 < G && self.axes[k.pair.0].0 != self.axes[k.pair.1].0)
+            .collect();
+        self.feats = cal.feats;
+        // patterns (and the classifier) are re-learned from the recordings, so a
+        // calibration saved by an older version decodes as this one would
+        self.relearn();
         self.update_coupling();
         self.reset_state();
     }
@@ -510,6 +755,8 @@ impl<const G: usize> GestureControl<G> {
     pub fn reset_state(&mut self) {
         self.recent = [0.0; NUM_CHANNELS];
         self.power = [0.0; G];
+        self.singles = [0.0; G];
+        self.episode = Episode::default();
         self.z_slow = [0.0; NUM_CHANNELS];
         self.posture_w.iter_mut().for_each(|w| *w = 0.0);
         self.active = [false; G];
@@ -517,6 +764,8 @@ impl<const G: usize> GestureControl<G> {
         self.compound = None;
         self.compound_t = 0.0;
         self.inputs = [0.0; NUM_JOINTS];
+        self.cov.reset();
+        self.feat = None;
     }
 
     /// Some gesture is calibrated, so the decoder runs.
@@ -609,6 +858,26 @@ impl<const G: usize> GestureControl<G> {
         }))
     }
 
+    /// Compound movements learned in live use, as (movement, movement, share of the first).
+    pub fn compounds(&self) -> Vec<(usize, usize, f64)> {
+        self.compounds.iter().map(|k| (k.pair.0, k.pair.1, k.mix)).collect()
+    }
+
+    /// Changes whenever a compound is learned or refined in live use.
+    pub fn compound_updates(&self) -> u32 {
+        self.compound_updates
+    }
+
+    /// Forgets the compound movements learned in live use.
+    pub fn clear_compounds(&mut self) {
+        self.compound_updates = self.compound_updates.wrapping_add(1);
+        self.compounds.clear();
+        self.episode = Episode::default();
+        self.refit_due = false;
+        self.update_stasis();
+        self.update_coupling();
+    }
+
     /// Channels that take part in the fit: seen at rest and in contact now.
     fn usable(&self) -> [bool; NUM_CHANNELS] {
         let seen = self.seen();
@@ -619,40 +888,207 @@ impl<const G: usize> GestureControl<G> {
         self.rest.as_ref().map_or([false; NUM_CHANNELS], |r| r.seen)
     }
 
-    /// `z` explained as a non-negative mix of `patterns` over the usable channels.
-    fn fit_patterns(patterns: &[&Features], z: &Features, usable: &[bool; NUM_CHANNELS], ridge: f64) -> Vec<f64> {
-        if patterns.is_empty() {
-            return Vec::new();
-        }
-        let mut g: Vec<Vec<f64>> = patterns.iter().map(|a| patterns.iter().map(|b| dot(a, b, usable)).collect()).collect();
-        for (i, row) in g.iter_mut().enumerate() {
-            row[i] *= 1.0 + ridge;
-        }
-        let h: Vec<f64> = patterns.iter().map(|a| dot(a, z, usable)).collect();
-        nnls(&g, &h)
+    /// Feed one sample of the filtered (not rectified) signal, before `process`.
+    pub fn push_filtered(&mut self, x: &[f32; NUM_CHANNELS]) {
+        self.cov.push(x);
     }
 
-    /// Power of each calibrated gesture in a (posture-corrected) sample.
-    fn fit(templates: &[Option<Features>; G], z: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; G] {
-        let idx: Vec<usize> = (0..G).filter(|&g| templates[g].is_some()).collect();
-        let patterns: Vec<&Features> = idx.iter().map(|&g| templates[g].as_ref().unwrap()).collect();
+    /// Channels with a bad contact, found at the limp rest: left out of
+    /// decoding (and, by the page, of the channel average).
+    pub fn bad_channels(&self) -> [bool; NUM_CHANNELS] {
+        self.rest.as_ref().map_or([false; NUM_CHANNELS], |r| outliers(&r.mean))
+    }
+
+    /// The classifier is fitted and in use.
+    fn lda_on(&self) -> bool {
+        self.use_lda && self.lda.is_some()
+    }
+
+    /// The classifier decodes this sample: it is on, and every channel it was
+    /// trained on has contact (it knows nothing of a channel going missing;
+    /// the patterns just fit around it).
+    fn lda_live(&self, usable: &[bool; NUM_CHANNELS]) -> bool {
+        self.lda_on() && *usable == self.seen()
+    }
+
+    fn featrec(&self, class: usize, kind: u8) -> Option<&FeatRec> {
+        self.feats.iter().find(|r| r.class == class && r.kind == kind)
+    }
+
+    /// Keeps the covariance for sample `i` of a recording (every FEAT_EVERY-th).
+    fn record_feats(&self, i: usize, out: &mut Vec<f32>) {
+        if i % FEAT_EVERY != 0 {
+            return;
+        }
+        if self.cov.filled() >= COV_WIN {
+            out.extend(self.cov.window().iter().map(|&v| v as f32));
+        } else {
+            out.extend(std::iter::repeat(f32::NAN).take(NUM_COV));
+        }
+    }
+
+    /// How sure the classifier is of each movement (0..1): its share against
+    /// the best class, and against the best rest. All 1 without a classifier;
+    /// all 0 while the window fills.
+    fn gate(&self, feat: Option<&[f64; NUM_FEATS]>) -> [f64; G] {
+        let Some(lda) = self.lda.as_ref().filter(|_| self.use_lda) else { return [1.0; G] };
+        let Some(f) = feat else { return [0.0; G] };
+        let mut out = [(0usize, 0.0f64); MAX_LDA_CLASSES];
+        let n = lda.model.scores(&with_effort(*f, lda.rest_mlr), &mut out);
+        let s = &out[..n];
+        let s_max = s.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
+        let s_rest = s.iter().filter(|x| x.0 >= G).map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
+        let mut gate = [0.0; G];
+        for &(c, sc) in s {
+            if c < G {
+                let vs_rest = if s_rest.is_finite() { 1.0 / (1.0 + (-(sc - s_rest) / LDA_TEMP).exp()) } else { 1.0 };
+                gate[c] = ((sc - s_max) / LDA_TEMP).exp() * vs_rest;
+            }
+        }
+        gate
+    }
+
+    /// Power of each movement in activation `x`. By the patterns alone (also
+    /// when a channel the classifier was trained on has lost contact): their
+    /// non-negative fit (with the compounds). With the classifier: each
+    /// pattern's own projection, gated (if `gated`) by how sure the classifier
+    /// is that it is that movement.
+    fn decode(&self, x: &Features, feat: Option<&[f64; NUM_FEATS]>, usable: &[bool; NUM_CHANNELS], gated: bool) -> [f64; G] {
+        if !self.lda_live(usable) {
+            return self.fit_all(x, usable);
+        }
+        let gate = if gated { self.gate(feat) } else { [1.0; G] };
+        std::array::from_fn(|g| {
+            self.templates[g].as_ref().map_or(0.0, |t| (dot(t, x, usable) / dot(t, t, usable).max(1e-9)).max(0.0) * gate[g])
+        })
+    }
+
+    /// Classifier features of a stored covariance, over the channels seen at rest.
+    fn feat_at(&self, fr: Option<&FeatRec>, i: usize) -> Option<[f64; NUM_FEATS]> {
+        let seen = self.seen();
+        fr.and_then(|r| r.at(i)).map(|c| raw_features(&c, &seen))
+    }
+
+    /// How far a movement's power is from its noise floor to its level (1 = at the level).
+    fn excess(&self, g: usize) -> f64 {
+        let b = self.bands(g);
+        (self.power[g] - b.stasis) / (b.level - b.stasis).max(1e-6)
+    }
+
+    /// What the faint round watches: with the classifier, the ungated power,
+    /// since it was not trained on faint holds.
+    fn faint_power(&self, g: usize) -> f64 {
+        if self.lda_on() { self.singles[g] } else { self.power[g] }
+    }
+
+    /// Fits the classifier: every rest posture, and the hard and half-strength
+    /// holds of every movement with a pattern. None until the limp rest and
+    /// every such movement have recordings.
+    fn fit_lda(&mut self) {
+        self.lda = None;
+        let seen = self.seen();
+        let rest0: Vec<f64> =
+            self.featrec(G, 0).into_iter().flat_map(|r| r.rows()).map(|c| raw_features(&c, &seen)[NUM_FEATS - 1]).collect();
+        let moves: Vec<usize> = (0..G).filter(|&g| self.templates[g].is_some()).collect();
+        if rest0.is_empty() || moves.is_empty() || !moves.iter().all(|&g| self.feats.iter().any(|r| r.class == g && r.kind < 3)) {
+            return;
+        }
+        let rest_mlr = rest0.iter().sum::<f64>() / rest0.len() as f64;
+        let samples: Vec<(usize, [f64; NUM_FEATS])> = self
+            .feats
+            .iter()
+            .filter(|r| if r.class >= G { r.kind == 0 } else { self.templates[r.class].is_some() && (r.kind == 1 || r.kind == 2) })
+            .flat_map(|r| r.rows().map(move |c| (r.class, with_effort(raw_features(&c, &seen), rest_mlr))))
+            .collect();
+        self.lda = LdaModel::fit(&samples, LDA_SHRINK).map(|model| Lda { model, rest_mlr });
+    }
+
+    /// `z` explained as a non-negative mix of `patterns` (at most NNLS_MAX) over the usable channels.
+    fn fit_patterns(patterns: &[&Features], z: &Features, usable: &[bool; NUM_CHANNELS], ridge: f64) -> [f64; NNLS_MAX] {
+        let n = patterns.len().min(NNLS_MAX);
+        let mut g = [[0.0; NNLS_MAX]; NNLS_MAX];
+        let mut h = [0.0; NNLS_MAX];
+        for i in 0..n {
+            for j in i..n {
+                let v = dot(patterns[i], patterns[j], usable);
+                g[i][j] = v;
+                g[j][i] = v;
+            }
+            g[i][i] *= 1.0 + ridge;
+            h[i] = dot(patterns[i], z, usable);
+        }
+        nnls(&g[..n], &h[..n])
+    }
+
+    /// The calibrated movements' patterns, in a fixed-size list, and which movement each is.
+    fn single_patterns(templates: &[Option<Features>; G]) -> ([&Features; NNLS_MAX], [usize; G], usize) {
+        let mut patterns = [&NO_PATTERN; NNLS_MAX];
+        let mut idx = [0; G];
+        let mut n = 0;
+        for (g, t) in templates.iter().enumerate() {
+            if let Some(t) = t.as_ref().filter(|_| n < NNLS_MAX.min(G)) {
+                patterns[n] = t;
+                idx[n] = g;
+                n += 1;
+            }
+        }
+        (patterns, idx, n)
+    }
+
+    /// Power of each calibrated gesture in an activation sample, from the
+    /// single-movement patterns and the learned compounds: a compound's weight
+    /// is shared between its two movements by its mix.
+    fn fit_all(&self, x: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; G] {
+        if self.compounds.is_empty() {
+            return Self::fit(&self.templates, x, usable);
+        }
+        let (mut patterns, idx, singles) = Self::single_patterns(&self.templates);
+        let compounds = &self.compounds[..self.compounds.len().min(NNLS_MAX - singles)];
+        for (k, c) in compounds.iter().enumerate() {
+            patterns[singles + k] = &c.pattern;
+        }
+        let w = Self::fit_patterns(&patterns[..singles + compounds.len()], x, usable, GESTURE_RIDGE);
         let mut out = [0.0; G];
-        for (k, w) in Self::fit_patterns(&patterns, z, usable, GESTURE_RIDGE).into_iter().enumerate() {
-            out[idx[k]] = w;
+        for k in 0..singles {
+            out[idx[k]] = w[k];
+        }
+        for (k, c) in compounds.iter().enumerate() {
+            let wk = w[singles + k];
+            out[c.pair.0] += wk * c.mix;
+            out[c.pair.1] += wk * (1.0 - c.mix);
         }
         out
     }
 
-    /// How much of each raised posture is in a slowly averaged sample. The
-    /// gestures are in the fit too, so a held gesture isn't taken for posture.
-    fn fit_posture(&self, z_slow: &Features, usable: &[bool; NUM_CHANNELS]) -> Vec<f64> {
-        if self.postures.is_empty() {
-            return Vec::new();
+    /// Power of each calibrated gesture in an activation sample, from the single movements alone.
+    fn fit(templates: &[Option<Features>; G], z: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; G] {
+        let (patterns, idx, n) = Self::single_patterns(templates);
+        let w = Self::fit_patterns(&patterns[..n], z, usable, GESTURE_RIDGE);
+        let mut out = [0.0; G];
+        for k in 0..n {
+            out[idx[k]] = w[k];
         }
-        let patterns: Vec<&Features> = self.postures.iter().chain(self.templates.iter().flatten()).collect();
-        let mut w = Self::fit_patterns(&patterns, z_slow, usable, POSTURE_RIDGE);
-        w.truncate(self.postures.len());
-        w
+        out
+    }
+
+    /// How much of each raised posture is in a slowly averaged sample (raised
+    /// posture p at index p − 1). The gestures' patterns are in the fit too, so
+    /// a held gesture isn't taken for posture.
+    fn fit_posture(&self, z_slow: &Features, usable: &[bool; NUM_CHANNELS]) -> [f64; POSTURES] {
+        let mut out = [0.0; POSTURES];
+        if self.postures.is_empty() {
+            return out;
+        }
+        let mut patterns = [&NO_PATTERN; NNLS_MAX];
+        let mut n = 0;
+        for p in self.postures.iter().take(POSTURES).chain(self.templates.iter().flatten()).take(NNLS_MAX) {
+            patterns[n] = p;
+            n += 1;
+        }
+        let w = Self::fit_patterns(&patterns[..n], z_slow, usable, POSTURE_RIDGE);
+        let k = self.postures.len().min(POSTURES);
+        out[..k].copy_from_slice(&w[..k]);
+        out
     }
 
     /// `z` with the posture baseline taken out.
@@ -663,19 +1099,21 @@ impl<const G: usize> GestureControl<G> {
     /// Share of each recorded posture (limp first) for posture weights `w`:
     /// the fitted posture signal placed on the path limp → forearm raised → arm
     /// up, shared between the two postures either side of it (see finger.rs).
-    fn membership(&self, w: &[f64]) -> Vec<f64> {
+    fn membership(&self, w: &[f64]) -> [f64; POSTURES] {
         let seen = self.seen();
         let signal: Features = std::array::from_fn(|c| self.postures.iter().zip(w).map(|(p, w)| w * p[c]).sum());
-        let points: Vec<Features> = std::iter::once([0.0; NUM_CHANNELS]).chain(self.postures.iter().copied()).collect();
-        let mut m = vec![0.0; points.len()];
-        if points.len() == 1 {
+        let n = (self.postures.len() + 1).min(POSTURES);
+        let point = |i: usize| if i == 0 { [0.0; NUM_CHANNELS] } else { self.postures[i - 1] };
+        let mut m = [0.0; POSTURES];
+        if n == 1 {
             m[0] = 1.0;
             return m;
         }
         let (mut best, mut best_seg, mut best_t) = (f64::INFINITY, 0, 0.0);
-        for i in 0..points.len() - 1 {
-            let d: Features = std::array::from_fn(|c| points[i + 1][c] - points[i][c]);
-            let rel: Features = std::array::from_fn(|c| signal[c] - points[i][c]);
+        for i in 0..n - 1 {
+            let (a, b) = (point(i), point(i + 1));
+            let d: Features = std::array::from_fn(|c| b[c] - a[c]);
+            let rel: Features = std::array::from_fn(|c| signal[c] - a[c]);
             let t = (dot(&rel, &d, &seen) / dot(&d, &d, &seen).max(1e-9)).clamp(0.0, 1.0);
             let off: Features = std::array::from_fn(|c| rel[c] - t * d[c]);
             let dist = dot(&off, &off, &seen);
@@ -702,7 +1140,8 @@ impl<const G: usize> GestureControl<G> {
         if self.posture_rest.is_empty() {
             return Vec::new();
         }
-        self.membership(&self.posture_w)
+        let n = (self.postures.len() + 1).min(POSTURES);
+        self.membership(&self.posture_w)[..n].to_vec()
     }
 
     /// Gesture recordings keep the posture they started in, so a strong
@@ -732,19 +1171,36 @@ impl<const G: usize> GestureControl<G> {
             let z_raw: Features =
                 std::array::from_fn(|c| if contact[c] { (env[c] as f64 - rest.mean[c]) / rest.scale[c] } else { 0.0 });
             let usable = self.usable();
+            self.feat = (self.cov.filled() >= COV_WIN).then(|| raw_features(&self.cov.window(), &usable));
             let s = 1.0 - (-1.0 / (POSTURE_TAU_S * SAMPLE_RATE) as f64).exp();
             for (slow, &z) in self.z_slow.iter_mut().zip(&z_raw) {
                 *slow += (z - *slow) * s;
             }
-            if !self.posture_frozen() {
-                self.posture_w = self.fit_posture(&self.z_slow, &usable);
+            if !self.posture_frozen() && self.tick % POSTURE_EVERY == 0 {
+                let w = self.fit_posture(&self.z_slow, &usable);
+                let n = self.posture_w.len().min(POSTURES);
+                self.posture_w[..n].copy_from_slice(&w[..n]);
             }
+            self.tick = self.tick.wrapping_add(1);
             self.z_raw = z_raw;
-            self.z = self.without_posture(&z_raw, &self.posture_w);
+            let lda = self.lda_live(&usable);
+            // the classifier knows the raised postures as rests of their own;
+            // the patterns alone need the posture taken out first
+            self.z = if lda { z_raw } else { self.without_posture(&z_raw, &self.posture_w) };
+            self.x = self.z;
             self.stasis = self.blend_stasis();
-            let raw = Self::fit(&self.templates, &self.z, &usable);
+            let feat = self.feat;
+            let raw = self.decode(&self.x, feat.as_ref(), &usable, true);
+            let singles = if lda {
+                self.decode(&self.x, feat.as_ref(), &usable, false)
+            } else {
+                Self::fit(&self.templates, &self.x, &usable)
+            };
             let alpha = 1.0 - (-1.0 / (POWER_TAU_S * SAMPLE_RATE) as f64).exp();
             for (p, r) in self.power.iter_mut().zip(raw) {
+                *p += (r - *p) * alpha;
+            }
+            for (p, r) in self.singles.iter_mut().zip(singles) {
                 *p += (r - *p) * alpha;
             }
             self.update_compound();
@@ -758,8 +1214,84 @@ impl<const G: usize> GestureControl<G> {
                 }
             }
         }
+        self.learn_compounds();
+        if self.refit_due && !self.active.iter().any(|&a| a) {
+            self.refit_due = false;
+            self.update_stasis();
+            self.update_coupling();
+        }
         self.calibration_step();
         self.update_inputs();
+    }
+
+    /// Live use only: while a pair is decoded together (both driving), gathers
+    /// its activation per unit of what the single-movement fit gives the two;
+    /// when the pair ends, the episode becomes or refines its compound pattern.
+    fn learn_compounds(&mut self) {
+        if self.run.is_some() || self.rest.is_none() || !self.learn_in_use || self.lda_on() {
+            self.episode = Episode::default();
+            return;
+        }
+        let pair = self
+            .compound
+            .filter(|&(a, b)| self.active[a] && self.active[b])
+            .map(|(a, b)| (a.min(b), a.max(b)));
+        if pair != self.episode.pair {
+            self.close_episode();
+            self.episode = Episode { pair, ..Default::default() };
+        }
+        let Some((a, b)) = pair else { return };
+        let lost = self.usable() != self.seen();
+        let (pa, pb) = (self.singles[a].max(0.0), self.singles[b].max(0.0));
+        let ep = &mut self.episode;
+        ep.lost |= lost;
+        if pa + pb < 1e-6 {
+            return;
+        }
+        // sums over the episode, divided at its end: a ratio of sums, so the lag
+        // of the smoothed powers behind the activation averages out
+        for (s, x) in ep.sum.iter_mut().zip(&self.x) {
+            *s += x;
+        }
+        ep.mix += pa;
+        ep.total += pa + pb;
+        ep.n += 1;
+    }
+
+    fn close_episode(&mut self) {
+        let ep = std::mem::take(&mut self.episode);
+        let Some((a, b)) = ep.pair else { return };
+        if ep.n < samples(LEARN_MIN_S) || ep.lost || ep.total < 1e-9 || self.axes[a].0 == self.axes[b].0 {
+            return;
+        }
+        let (Some(ta), Some(tb)) = (self.templates[a], self.templates[b]) else { return };
+        let seen = self.seen();
+        let pattern: Features = ep.sum.map(|s| s / ep.total);
+        let mix = ep.mix / ep.total;
+        if let Some(k) = self.compounds.iter_mut().find(|k| k.pair == (a, b)) {
+            k.n = (k.n + 1.0).min(LEARN_MEMORY);
+            for (p, &v) in k.pattern.iter_mut().zip(&pattern) {
+                *p += (v - *p) / k.n;
+            }
+            k.mix += (mix - k.mix) / k.n;
+        } else {
+            // the fit takes at most NNLS_MAX patterns, the single movements first
+            if self.compounds.len() + G >= NNLS_MAX {
+                return;
+            }
+            // only worth a pattern of its own if the two don't simply add up to it
+            let w = Self::fit_patterns(&[&ta, &tb], &pattern, &seen, 0.0);
+            let fitted: Features = std::array::from_fn(|c| w[0] * ta[c] + w[1] * tb[c]);
+            let off: Features = std::array::from_fn(|c| pattern[c] - fitted[c]);
+            let residual = (dot(&off, &off, &seen) / dot(&pattern, &pattern, &seen).max(1e-12)).sqrt();
+            let like_one = cosine(&pattern, &ta, &seen).max(cosine(&pattern, &tb, &seen)) > COMPOUND_SINGLE_COS;
+            if residual < COMPOUND_RESIDUAL || like_one {
+                return;
+            }
+            self.compounds.push(Compound { pair: (a, b), pattern, mix, n: 1.0 });
+        }
+        self.compound_updates = self.compound_updates.wrapping_add(1);
+        self.refit_due = true;
     }
 
     /// How far `x` reads above what `y`'s crosstalk predicts for it, in standard deviations.
@@ -773,9 +1305,13 @@ impl<const G: usize> GestureControl<G> {
     /// stronger one's crosstalk by COMPOUND_EXIT_SIGMAS; a new pair needs the
     /// runner-up at COMPOUND_SIGMAS for COMPOUND_COMMIT_S.
     fn update_compound(&mut self) {
-        let mut order: Vec<usize> = (0..G).filter(|&g| self.templates[g].is_some()).collect();
+        let mut order: [usize; G] = std::array::from_fn(|g| g);
         order.sort_by(|&a, &b| self.power[b].total_cmp(&self.power[a]));
-        let (Some(&best), Some(&runner)) = (order.first(), order.get(1)) else {
+        let calibrated = |g: &usize| self.templates[*g].is_some();
+        // flexing and extending the same joint at once is no compound: the weaker one is crosstalk
+        let best = order.iter().copied().find(calibrated);
+        let runner = best.and_then(|b| order.iter().copied().filter(calibrated).find(|&g| self.axes[g].0 != self.axes[b].0));
+        let (Some(best), Some(runner)) = (best, runner) else {
             self.compound = None;
             self.compound_t = 0.0;
             return;
@@ -804,7 +1340,7 @@ impl<const G: usize> GestureControl<G> {
         let mut ok = [false; G];
         let best = (0..G)
             .filter(|&g| self.templates[g].is_some())
-            .max_by(|&a, &b| self.power[a].total_cmp(&self.power[b]));
+            .max_by(|&a, &b| self.excess(a).total_cmp(&self.excess(b)));
         if let Some(best) = best {
             ok[best] = true;
         }
@@ -823,12 +1359,12 @@ impl<const G: usize> GestureControl<G> {
     fn update_coupling(&mut self) {
         let seen = self.seen();
         let alpha = 1.0 - (-1.0 / (POWER_TAU_S * SAMPLE_RATE) as f64).exp();
-        let smoothed = |rec: &[Features]| -> Vec<[f64; G]> {
+        let smoothed = |rec: &[Features], fr: Option<&FeatRec>| -> Vec<[f64; G]> {
             let mut p = [0.0; G];
             rec.iter()
                 .enumerate()
                 .map(|(i, z)| {
-                    let w = Self::fit(&self.templates, z, &seen);
+                    let w = self.decode(z, self.feat_at(fr, i).as_ref(), &seen, true);
                     for (pg, wg) in p.iter_mut().zip(w) {
                         *pg = if i == 0 { wg } else { *pg + (wg - *pg) * alpha };
                     }
@@ -840,7 +1376,10 @@ impl<const G: usize> GestureControl<G> {
         for a in (0..G).filter(|&a| self.templates[a].is_some()) {
             let d = &self.data[a];
             let fits: Vec<[f64; G]> =
-                [&d.hard_rec, &d.medium, &d.faint].into_iter().flat_map(|rec| smoothed(rec)).collect();
+                [(&d.hard_rec, 1), (&d.medium, 2), (&d.faint, 3)]
+                    .into_iter()
+                    .flat_map(|(rec, k)| smoothed(rec, self.featrec(a, k)))
+                    .collect();
             let saa: f64 = fits.iter().map(|w| w[a] * w[a]).sum();
             if fits.len() < 2 || saa < 1e-9 {
                 continue;
@@ -881,13 +1420,14 @@ impl<const G: usize> GestureControl<G> {
 
     fn update_inputs(&mut self) {
         self.inputs = [0.0; NUM_JOINTS];
-        let gestures: Vec<usize> = match self.run.as_ref().map(|r| r.step) {
-            None => (0..G).collect(),
+        let step = self.run.as_ref().map(|r| r.step);
+        let moves: [bool; G] = std::array::from_fn(|g| match step {
+            None => self.active[g],
             // training: only the gesture being trained moves the arm
-            Some(Step::Train(g)) => vec![g],
-            Some(_) => Vec::new(),
-        };
-        for g in gestures.into_iter().filter(|&g| self.active[g]) {
+            Some(Step::Train(t)) => g == t && self.active[g],
+            Some(_) => false,
+        });
+        for g in (0..G).filter(|&g| moves[g]) {
             let (axis, dir) = self.axes[g];
             self.inputs[axis] = (self.inputs[axis] + dir * self.speed(g) * self.gain).clamp(-1.0, 1.0);
         }
@@ -929,6 +1469,8 @@ impl<const G: usize> GestureControl<G> {
             good: 0,
             stuck: 0,
             rec: Vec::new(),
+            feats: Vec::new(),
+            holds: 0,
             next: None,
             rests: if step == Step::Rest(0) { POSTURES } else { 0 },
             calibrate,
@@ -980,6 +1522,9 @@ impl<const G: usize> GestureControl<G> {
             (Step::Hard(g) | Step::Medium(g), _) => {
                 self.data[g] = GestureData::default();
                 self.templates[g] = None;
+                self.feats.retain(|r| r.class != g);
+                self.fit_lda();
+                run.holds = 0;
                 self.next_calibration_step(&mut run, step)
             }
             (Step::Faint(_), _) => self.next_calibration_step(&mut run, step),
@@ -995,7 +1540,8 @@ impl<const G: usize> GestureControl<G> {
             (Step::Train(_), Phase::Prepare) => samples(CUE_S),
             (_, Phase::Prepare) => samples(COUNTDOWN_S),
             (Step::Rest(_), Phase::Record) => samples(REST_S),
-            (Step::Hard(_) | Step::Medium(_) | Step::Faint(_), Phase::Record) => samples(GESTURE_S),
+            (Step::Hard(_) | Step::Medium(_), Phase::Record) => samples(GESTURE_S) / HOLDS,
+            (Step::Faint(_), Phase::Record) => samples(GESTURE_S),
             (Step::Train(_), Phase::Record) => samples(TRIAL_TIMEOUT_S),
             (Step::Train(_), Phase::Relax) => samples(TRAIN_RELAX_S),
             (_, Phase::Relax) => samples(RELAX_S),
@@ -1017,12 +1563,15 @@ impl<const G: usize> GestureControl<G> {
             .max_by(|&a, &b| self.power[a].total_cmp(&self.power[b]))
     }
 
-    /// The channel furthest above its recent level, against its stillness limit.
-    fn stillness_recent(&self) -> (usize, f64) {
+    /// The channel furthest above its recent level, against its stillness
+    /// limit (capped at REST_CEILING_UV if `ceiling`: the limp rest only, since
+    /// holding the arm up is a steady contraction of its own).
+    fn stillness_recent(&self, ceiling: bool) -> (usize, f64) {
         (0..NUM_CHANNELS)
             .filter(|&c| self.contact[c])
             .map(|c| {
-                let limit = (self.recent[c] * STILL_RATIO + STILL_MARGIN_UV).min(REST_CEILING_UV);
+                let limit = self.recent[c] * STILL_RATIO + STILL_MARGIN_UV;
+                let limit = if ceiling { limit.min(REST_CEILING_UV) } else { limit };
                 (c, (self.envelope[c] / limit.max(1e-3)) as f64)
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -1049,13 +1598,13 @@ impl<const G: usize> GestureControl<G> {
     fn meter(&self, run: &Run) -> (Meter, f64, (f64, f64), f64) {
         let none = (f64::NAN, f64::NAN);
         match (run.step, run.phase) {
-            (Step::Rest(_), _) => (Meter::Stillness, self.stillness_recent().1, none, f64::NAN),
+            (Step::Rest(p), _) => (Meter::Stillness, self.stillness_recent(p == 0).1, none, f64::NAN),
             (Step::Hard(_), Phase::Record) => {
                 let a = Self::activity(&self.z, &self.usable()) / HARD_MIN_ACTIVITY;
                 (Meter::Activity, a, (1.0, f64::INFINITY), f64::NAN)
             }
             (Step::Medium(g), Phase::Record) => (Meter::OfHard, self.of_hard(g), MEDIUM_TARGET, f64::NAN),
-            (Step::Faint(g), Phase::Record) => (Meter::Power, self.power[g], self.faint_box(g), f64::NAN),
+            (Step::Faint(g), Phase::Record) => (Meter::Power, self.faint_power(g), self.faint_box(g), f64::NAN),
             (Step::Train(g), Phase::Relax) => (Meter::Power, self.power[g], none, f64::NAN),
             (Step::Train(g), _) => (Meter::Power, self.power[g], self.trial_band(g), self.bands(g).level),
             _ => (Meter::Stillness, self.stillness_z().1, none, f64::NAN),
@@ -1073,7 +1622,7 @@ impl<const G: usize> GestureControl<G> {
         let usable = self.usable();
         Some(match (run.step, run.phase) {
             (_, Phase::Prepare) => unreachable!(),
-            (Step::Rest(_), _) => match self.stillness_recent() {
+            (Step::Rest(p), _) => match self.stillness_recent(p == 0) {
                 (c, r) if r > 1.0 => Check::Moving(c),
                 _ => Check::Clean,
             },
@@ -1083,9 +1632,7 @@ impl<const G: usize> GestureControl<G> {
             (Step::Medium(g), Phase::Record) => {
                 let h = self.of_hard(g);
                 let active = Self::activity(&self.z, &usable) >= MEDIUM_MIN_ACTIVITY;
-                if let Some(other) = self.stronger_gesture(g).filter(|_| active) {
-                    Check::OtherGesture(other)
-                } else if !active || h < MEDIUM_MIN {
+                if !active || h < MEDIUM_MIN {
                     Check::TooWeak
                 } else if h > MEDIUM_MAX {
                     Check::TooStrong
@@ -1094,11 +1641,9 @@ impl<const G: usize> GestureControl<G> {
                 }
             }
             (Step::Faint(g), Phase::Record) => {
-                let p = self.power[g];
+                let p = self.faint_power(g);
                 let (lo, hi) = self.faint_box(g);
-                if let Some(other) = self.stronger_gesture(g) {
-                    Check::OtherGesture(other)
-                } else if p > hi {
+                if p > hi {
                     Check::Fainter
                 } else if p < lo {
                     Check::TooWeak
@@ -1156,6 +1701,7 @@ impl<const G: usize> GestureControl<G> {
                         Step::Rest(_) => self.z_raw,
                         _ => self.z,
                     });
+                    self.record_feats(run.rec.len() - 1, &mut run.feats);
                     run.good += 1;
                     run.stuck = 0;
                 } else {
@@ -1189,8 +1735,17 @@ impl<const G: usize> GestureControl<G> {
                 self.enter(&mut run, next)
             }
             (Phase::Record, _) => {
-                if !matches!(run.step, Step::Train(_)) {
-                    run.next = self.finish_recording(&mut run);
+                match run.step {
+                    Step::Train(_) => {}
+                    // a hard or half-strength recording is HOLDS holds, with a relax between
+                    Step::Hard(_) | Step::Medium(_) if run.holds + 1 < HOLDS => {
+                        run.holds += 1;
+                        run.next = Some(run.step);
+                    }
+                    _ => {
+                        run.holds = 0;
+                        run.next = self.finish_recording(&mut run);
+                    }
                 }
                 run.phase = Phase::Relax;
                 true
@@ -1214,7 +1769,10 @@ impl<const G: usize> GestureControl<G> {
         run.good = 0;
         run.stuck = 0;
         run.hold = 0;
-        run.rec.clear();
+        if run.holds == 0 {
+            run.rec.clear();
+            run.feats.clear();
+        }
         if keep {
             self.run = Some(run);
         }
@@ -1229,14 +1787,20 @@ impl<const G: usize> GestureControl<G> {
                 run.streak = 0;
             }
         }
+        // the next hold of the same recording: straight into its countdown, keeping what was recorded
+        let again = run.holds > 0 && step == run.step;
+        if !again {
+            run.holds = 0;
+            run.rec.clear();
+            run.feats.clear();
+        }
         run.step = step;
         run.phase = Phase::Prepare;
-        run.ready = false;
+        run.ready = again;
         run.t = 0;
         run.good = 0;
         run.stuck = 0;
         run.hold = 0;
-        run.rec.clear();
         true
     }
 
@@ -1244,14 +1808,18 @@ impl<const G: usize> GestureControl<G> {
     /// measured against. A raised posture: its pattern and noise.
     fn finish_rest(&mut self, run: &mut Run, p: usize) -> Option<Step> {
         let rec = std::mem::take(&mut run.rec);
+        let feats = std::mem::take(&mut run.feats);
         if p == 0 {
+            let before = self.bad_channels();
             let n = rec.len().max(1);
             let mean = mean(&rec);
             let scale: Features = std::array::from_fn(|c| {
                 let var = rec.iter().map(|x| (x[c] - mean[c]).powi(2)).sum::<f64>() / n as f64;
                 var.sqrt().max(MIN_SCALE_UV)
             });
-            let seen: [bool; NUM_CHANNELS] = std::array::from_fn(|c| self.contact[c] && mean[c] > 0.0);
+            // contact check: a channel far noisier than the others at rest is left out
+            let bad = outliers(&mean);
+            let seen: [bool; NUM_CHANNELS] = std::array::from_fn(|c| self.contact[c] && mean[c] > 0.0 && !bad[c]);
             let z = rec.iter().map(|x| std::array::from_fn(|c| (x[c] - mean[c]) / scale[c])).collect();
             self.rest = Some(RestModel { mean, scale, seen });
             // every pattern was measured against the old rest: start over
@@ -1263,15 +1831,26 @@ impl<const G: usize> GestureControl<G> {
             self.data = std::array::from_fn(|_| GestureData::default());
             self.level = [LEVEL_MAX; G];
             self.report = [GestureReport::default(); G];
+            self.compounds.clear();
+            self.feats = vec![FeatRec { class: G, kind: 0, data: feats }];
+            self.lda = None;
             if seen.iter().filter(|&&s| s).count() < MIN_WORKING {
                 self.update_stasis();
                 return None;
+            }
+            // with the channel average taken out, a bad contact spoiled every
+            // channel's rest: record it again now that it is left out
+            if self.car && (0..NUM_CHANNELS).any(|c| bad[c] && !before[c]) {
+                self.update_stasis();
+                return Some(Step::Rest(0));
             }
         } else {
             self.postures.push(mean(&rec));
             self.posture_rest.push(rec);
             self.posture_w.push(0.0);
+            self.feats.push(FeatRec { class: G + self.posture_rest.len() - 1, kind: 0, data: feats });
         }
+        self.fit_lda();
         self.update_stasis();
         Self::after_rest(run, p)
     }
@@ -1287,55 +1866,39 @@ impl<const G: usize> GestureControl<G> {
 
     /// A gesture recording is done: learn from it and decide the next step.
     fn finish_recording(&mut self, run: &mut Run) -> Option<Step> {
-        let seen = self.seen();
         let rec = std::mem::take(&mut run.rec);
+        let feats = std::mem::take(&mut run.feats);
+        let (Step::Hard(g) | Step::Medium(g) | Step::Faint(g)) = run.step else { return None };
+        let kind = kind_of(run.step);
+        // patterns learned in live use were fitted against the old patterns
+        self.compounds.clear();
+        // a new hard recording starts the movement over
+        self.feats.retain(|r| r.class != g || (kind != 1 && r.kind != kind));
+        self.feats.push(FeatRec { class: g, kind, data: feats });
+        // every recording re-learns every movement's pattern,
+        // so a movement recorded early isn't stuck with the patterns there were then
         match run.step {
             Step::Hard(g) => {
-                let hard = mean(&rec);
-                self.data[g] = GestureData { hard: Some(hard), hard_rec: rec.clone(), ..Default::default() };
-                // a provisional pattern straight away, so the half-strength round can
-                // already tell this gesture from the others (scaled so a hard one reads ~2)
-                self.templates[g] = direction(&hard, &seen).and_then(|dir| {
-                    let a = percentile(rec.iter().map(|z| dot(&dir, z, &seen)).collect(), CEILING_PERCENTILE) / 2.0;
-                    (a > 1e-6).then(|| dir.map(|v| v * a))
-                });
-                self.update_stasis();
+                self.data[g] = GestureData { hard: Some(mean(&rec)), hard_rec: rec, ..Default::default() };
+                self.relearn();
             }
             Step::Medium(g) => {
-                let d = &mut self.data[g];
-                d.shapes = direction(&mean(&rec), &seen).into_iter().collect();
-                d.medium = rec;
-                self.rebuild_template(g);
+                self.data[g].medium = rec;
+                self.relearn();
                 if self.templates[g].is_none() {
                     self.data[g] = GestureData::default(); // no usable pattern: out of the faint round
+                    self.feats.retain(|r| r.class != g);
+                    self.relearn();
                 }
             }
             Step::Faint(g) => {
-                // only refine this gesture with the round if it really looks like this gesture
-                let shape = direction(&mean(&rec), &seen).filter(|s| self.closest_gesture(s, &seen) == Some(g));
-                let d = &mut self.data[g];
-                match shape {
-                    Some(s) => d.shapes.push(s),
-                    None => d.mixed = true,
-                }
-                d.faint = rec;
-                self.rebuild_template(g);
+                self.data[g].faint = rec;
+                self.relearn();
             }
             Step::Rest(_) | Step::Train(_) => return None,
         }
         let step = run.step;
         self.next_calibration_step(run, step)
-    }
-
-    /// The gesture whose pattern points most the same way as `shape`.
-    fn closest_gesture(&self, shape: &Features, seen: &[bool; NUM_CHANNELS]) -> Option<usize> {
-        (0..G)
-            .filter_map(|g| {
-                let t = self.templates[g].as_ref()?;
-                Some((g, dot(shape, t, seen) / dot(t, t, seen).sqrt().max(1e-9)))
-            })
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(g, _)| g)
     }
 
     /// Phase 1 runs round by round: every gesture hard, then every gesture at
@@ -1373,31 +1936,95 @@ impl<const G: usize> GestureControl<G> {
         run.train.first().map(|&g| Step::Train(g))
     }
 
-    /// The gesture's pattern is the average of its unit patterns from every
-    /// round, scaled so that the softest part of the half-strength one reads 1.
-    fn rebuild_template(&mut self, g: usize) {
-        let seen = self.seen();
-        let d = &self.data[g];
-        self.templates[g] = direction(&mean(&d.shapes), &seen).and_then(|dir| {
-            let a = percentile(d.medium.iter().map(|z| dot(&dir, z, &seen)).collect(), CEILING_PERCENTILE);
-            (a > 1e-6).then(|| dir.map(|v| v * a))
-        });
+    /// Re-learns every movement's pattern from its recordings (each one from
+    /// its own alone), then the classifier and the noise floors.
+    fn relearn(&mut self) {
+        for g in 0..G {
+            let (t, mixed) = self.learn_template(g);
+            self.templates[g] = t;
+            self.data[g].mixed = mixed;
+            self.data[g].shapes.clear();
+        }
+        self.fit_lda();
         self.update_stasis();
     }
 
-    /// Gesture powers over a recorded stretch of raw z, worked out the way the
-    /// live decoder does: slow posture fit, posture taken out, gestures fitted.
-    fn replay(&self, seq: &[Features]) -> Vec<[f64; G]> {
+    /// Whether sample `x` is a hit for the movement whose pattern points along `dir`.
+    fn is_hit(dir: &Features, x: &Features, seen: &[bool; NUM_CHANNELS]) -> bool {
+        cosine(x, dir, seen) >= HIT_COS
+    }
+
+    /// Movement `g`'s pattern, and whether its faint round was mostly misses.
+    /// The half-strength round seeds the direction; then each round's hits
+    /// (by their own pattern alone) are averaged, every round counting the
+    /// same, so the hard contraction anchors it and stray moments don't pull it. Scaled so that the softest
+    /// part of the half-strength hits reads 1. Before there is a half-strength
+    /// round: a provisional pattern from the hard one, so the next round can
+    /// already tell this movement from the others (scaled so a hard one reads ~2).
+    fn learn_template(&self, g: usize) -> (Option<Features>, bool) {
         let seen = self.seen();
+        let d = &self.data[g];
+        let (hard, medium, faint) = (&d.hard_rec, &d.medium, &d.faint);
+        let scaled = |dir: Features, rec: &[Features], p: f64, div: f64| {
+            let a = percentile(rec.iter().map(|x| dot(&dir, x, &seen)).collect(), p) / div;
+            (a > 1e-6).then(|| dir.map(|v| v * a))
+        };
+        if medium.is_empty() {
+            return (direction(&mean(hard), &seen).and_then(|dir| scaled(dir, hard, CEILING_PERCENTILE, 2.0)), false);
+        }
+        if hard.is_empty() {
+            return (None, false);
+        }
+        let Some(mut dir) = direction(&mean(medium), &seen) else { return (None, false) };
+        let hits = |dir: &Features, rec: &[Features]| -> Vec<Features> {
+            rec.iter().copied().filter(|x| Self::is_hit(dir, x, &seen)).collect()
+        };
+        for _ in 0..2 {
+            let shapes: Vec<Features> = [hard, medium, faint]
+                .into_iter()
+                .filter_map(|rec| {
+                    let h = hits(&dir, rec);
+                    let enough = !rec.is_empty() && h.len() as f64 >= ROUND_MIN_HITS * rec.len() as f64;
+                    enough.then(|| direction(&mean(&h), &seen)).flatten()
+                })
+                .collect();
+            match direction(&mean(&shapes), &seen) {
+                Some(next) => dir = next,
+                None => break,
+            }
+        }
+        let mixed = !faint.is_empty() && (hits(&dir, faint).len() as f64) < 0.5 * faint.len() as f64;
+        let medium_hits = hits(&dir, medium);
+        let base = if medium_hits.len() as f64 >= ROUND_MIN_HITS * medium.len() as f64 { &medium_hits } else { medium };
+        (scaled(dir, base, CEILING_PERCENTILE, 1.0), mixed)
+    }
+
+    /// Gesture powers over a recorded stretch of raw z, worked out the way the
+    /// live decoder does: slow posture fit, posture taken out, gestures
+    /// fitted. Not smoothed, unlike the live powers: the noise floors come from
+    /// these, and the unsmoothed spread is the margin that keeps a rest held
+    /// longer than its recording (the arm up, above all) under them.
+    fn replay(&self, seq: &[Features], fr: Option<&FeatRec>) -> Vec<[f64; G]> {
+        let seen = self.seen();
+        let lda = self.lda_on();
         let s = 1.0 - (-1.0 / (POSTURE_TAU_S * SAMPLE_RATE) as f64).exp();
         let mut slow = seq.first().copied().unwrap_or([0.0; NUM_CHANNELS]);
+        let mut w = [0.0; POSTURES];
         seq.iter()
-            .map(|z| {
-                for (sl, v) in slow.iter_mut().zip(z) {
-                    *sl += (v - *sl) * s;
-                }
-                let w = self.fit_posture(&slow, &seen);
-                Self::fit(&self.templates, &self.without_posture(z, &w), &seen)
+            .enumerate()
+            .map(|(i, z)| {
+                let z = if lda {
+                    *z
+                } else {
+                    for (sl, v) in slow.iter_mut().zip(z) {
+                        *sl += (v - *sl) * s;
+                    }
+                    if i % POSTURE_EVERY as usize == 0 {
+                        w = self.fit_posture(&slow, &seen);
+                    }
+                    self.without_posture(z, &w)
+                };
+                self.decode(&z, self.feat_at(fr, i).as_ref(), &seen, true)
             })
             .collect()
     }
@@ -1408,8 +2035,9 @@ impl<const G: usize> GestureControl<G> {
         self.stasis_by = self
             .posture_rest
             .iter()
-            .map(|seq| {
-                let fits = self.replay(seq);
+            .enumerate()
+            .map(|(p, seq)| {
+                let fits = self.replay(seq, self.featrec(G + p, 0));
                 std::array::from_fn(|g| {
                     let p = percentile(fits.iter().map(|w| w[g]).collect(), STASIS_PERCENTILE);
                     (p + STASIS_MARGIN).max(STASIS_MIN)
@@ -1434,8 +2062,20 @@ impl<const G: usize> GestureControl<G> {
             if self.templates[g].is_none() {
                 continue;
             }
-            let fits: Vec<[f64; G]> = self.data[g].faint.iter().map(|z| Self::fit(&self.templates, z, &seen)).collect();
-            let faint = if fits.is_empty() { LEVEL_MAX } else { percentile(fits.iter().map(|w| w[g]).collect(), 0.5) };
+            let fr = self.featrec(g, 3);
+            let fit = |gated: bool| -> Vec<[f64; G]> {
+                self.data[g]
+                    .faint
+                    .iter()
+                    .enumerate()
+                    .map(|(i, z)| self.decode(z, self.feat_at(fr, i).as_ref(), &seen, gated))
+                    .collect()
+            };
+            // the level from the patterns' own reading (the classifier never saw a
+            // faint hold); isolation as it decodes
+            let levels = fit(false);
+            let fits = fit(true);
+            let faint = if levels.is_empty() { LEVEL_MAX } else { percentile(levels.iter().map(|w| w[g]).collect(), 0.5) };
             let on_top = fits
                 .iter()
                 .filter(|w| w[g] > self.stasis[g] && (0..G).all(|h| w[h] <= w[g]))
@@ -1569,6 +2209,9 @@ mod tests {
         posture: usize,
         /// Training: the user can't hold lighter than this power, whatever the target.
         floor: f64,
+        /// Two movements that, made together, also fire this site by this much
+        /// of the weaker one's drive: a compound that isn't the sum of its parts.
+        synergy: Option<((usize, usize), usize, f64)>,
     }
 
     impl User<NUM_GESTURES> {
@@ -1585,7 +2228,15 @@ mod tests {
 
     impl<const G: usize> User<G> {
         fn with(seed: u32, patterns: &'static [[f64; NUM_CHANNELS]; G]) -> Self {
-            Self { rng: seed, patterns, drive: [0.0; G], wiring: std::array::from_fn(|c| c), posture: 0, floor: 0.0 }
+            Self {
+                rng: seed,
+                patterns,
+                drive: [0.0; G],
+                wiring: std::array::from_fn(|c| c),
+                posture: 0,
+                floor: 0.0,
+                synergy: None,
+            }
         }
 
         fn step(&mut self, gc: &mut GestureControl<G>) {
@@ -1593,7 +2244,12 @@ mod tests {
                 let site = self.wiring[c];
                 let base = 3.0 * (1.0 + 0.12 * noise(&mut self.rng));
                 let tone = TONE[self.posture][site] * (1.0 + 0.25 * noise(&mut self.rng));
-                let sig: f64 = (0..G).map(|g| self.drive[g] * self.patterns[g][site]).sum();
+                let mut sig: f64 = (0..G).map(|g| self.drive[g] * self.patterns[g][site]).sum();
+                if let Some(((a, b), s, k)) = self.synergy {
+                    if s == site {
+                        sig += k * self.drive[a].min(self.drive[b]);
+                    }
+                }
                 (base + tone + 40.0 * sig * (1.0 + 0.15 * noise(&mut self.rng))) as f32
             });
             gc.process(&env, &[true; NUM_CHANNELS]);
@@ -1860,19 +2516,21 @@ mod tests {
     #[test]
     fn a_compound_needs_a_moment_to_join_and_holds_through_a_dip() {
         let mut gc = GestureControl::muscle();
-        gc.templates[0] = Some([1.0; NUM_CHANNELS]);
-        gc.templates[1] = Some([1.0; NUM_CHANNELS]);
-        // gesture 1 reads 0.2 × gesture 0 when only 0 is made, give or take 0.05
-        gc.coupling[0][1] = (0.2, 0.05);
-        gc.coupling[1][0] = (0.2, 0.05);
+        // two movements on different joints (reach out, elbow −)
+        let (a, b) = (2, 5);
+        gc.templates[a] = Some([1.0; NUM_CHANNELS]);
+        gc.templates[b] = Some([1.0; NUM_CHANNELS]);
+        // b reads 0.2 × a when only a is made, give or take 0.05
+        gc.coupling[a][b] = (0.2, 0.05);
+        gc.coupling[b][a] = (0.2, 0.05);
         let hold = |gc: &mut GestureControl<NUM_GESTURES>, p0: f64, p1: f64, s: f32| {
             for _ in 0..samples(s) {
                 gc.power = [0.0; NUM_GESTURES];
-                gc.power[0] = p0;
-                gc.power[1] = p1;
+                gc.power[a] = p0;
+                gc.power[b] = p1;
                 gc.update_compound();
             }
-            gc.decodable()[1]
+            gc.decodable()[b]
         };
         let line = |sigmas: f64| 0.2 + 0.05 * sigmas;
         assert!(!hold(&mut gc, 1.0, line(1.5), 1.0), "within 2σ of its crosstalk: not a compound");
@@ -1888,7 +2546,7 @@ mod tests {
     #[test]
     fn redoing_one_gesture_keeps_the_rest() {
         let (mut gc, mut u) = calibrated(User::new(18), false);
-        let before = gc.templates;
+        let before: Vec<_> = gc.data.iter().map(|d| (d.hard_rec.clone(), d.medium.clone(), d.faint.clone())).collect();
         gc.start_gesture(2, false);
         for _ in 0..samples(300.0) {
             if !gc.running() {
@@ -1898,9 +2556,12 @@ mod tests {
         }
         assert!(!gc.running());
         assert!(gc.calibrated());
+        // the others keep their recordings (their patterns are re-learned from them)
         for g in (0..NUM_GESTURES).filter(|&g| g != 2) {
-            assert_eq!(gc.templates[g], before[g], "gesture {g} untouched");
+            let d = &gc.data[g];
+            assert!((d.hard_rec.clone(), d.medium.clone(), d.faint.clone()) == before[g], "gesture {g} untouched");
         }
+        assert_each_gesture_drives_its_axis(&mut gc, &mut u);
     }
 
     #[test]
@@ -1940,11 +2601,126 @@ mod tests {
     }
 
     #[test]
+    fn channel_activation_reads_zero_at_rest_and_stays_in_range() {
+        let (mut gc, mut u) = calibrated(User::new(40), false);
+        u.hold(&mut gc, 0, 0.0, 1.0);
+        let rest = gc.channel_activation().unwrap();
+        assert!(rest.iter().all(|&a| a < 0.3), "rest reads near 0: {rest:?}");
+        // far past any calibration: still within 0..1
+        u.drive = [1.2; NUM_GESTURES];
+        u.step(&mut gc);
+        assert!(gc.channel_activation().unwrap().iter().all(|&a| (0.0..=1.0).contains(&a)));
+    }
+
+    #[test]
+    fn misses_during_calibration_dont_shape_the_patterns() {
+        let (mut gc, mut u) = calibrated(User::new(41), false);
+        let before = gc.templates;
+        // random misses: spells where one or two channels fire on their own,
+        // as much as a third again of each half-strength and faint recording
+        let mut rng = 41u32;
+        let mut miss = || -> Features {
+            let mut z = [0.0; NUM_CHANNELS];
+            for _ in 0..2 {
+                let c = ((noise(&mut rng) + 1.0) / 2.0 * NUM_CHANNELS as f64) as usize % NUM_CHANNELS;
+                z[c] += 25.0 * (1.5 + noise(&mut rng));
+            }
+            z
+        };
+        for d in gc.data.iter_mut() {
+            for rec in [&mut d.medium, &mut d.faint] {
+                let n = rec.len() / 3;
+                for k in 0..n {
+                    let m = miss();
+                    rec.insert((k * 3) % rec.len(), m);
+                }
+            }
+        }
+        gc.relearn();
+        gc.update_coupling();
+        let seen = gc.seen();
+        for g in 0..NUM_GESTURES {
+            let (a, b) = (gc.templates[g].unwrap(), before[g].unwrap());
+            let cos = cosine(&a, &b, &seen);
+            assert!(cos > 0.995, "movement {g}: pattern {cos:.4} of the clean one");
+        }
+        assert_each_gesture_drives_its_axis(&mut gc, &mut u);
+    }
+
+    #[test]
+    fn a_compound_that_isnt_the_sum_of_its_parts_is_learned_in_use() {
+        let mut u = User::new(42);
+        // tricep extend + wrist curl together also brace the wrist extensors (site 4)
+        u.synergy = Some(((2, 5), 4, 0.6));
+        let (mut gc, mut u) = calibrated(u, false);
+        assert!(gc.compounds().is_empty());
+        for _ in 0..4 {
+            hold_together(&mut gc, &mut u, &[], 0.0, 1.0);
+            hold_together(&mut gc, &mut u, &[2, 5], 0.4, 1.5);
+        }
+        hold_together(&mut gc, &mut u, &[], 0.0, 1.0);
+        let learned = gc.compounds();
+        assert!(learned.iter().any(|&(a, b, _)| (a, b) == (2, 5)), "learned {learned:?}");
+        assert!(learned.iter().all(|&(a, b, _)| (a, b) == (2, 5)), "only that pair: {learned:?}");
+        // it decodes as both, cleanly
+        let (inputs, most) = hold_together(&mut gc, &mut u, &[2, 5], 0.4, 1.5);
+        assert!(inputs[1] > 0.3 && inputs[2] < -0.3, "both should move: {inputs:?}");
+        assert_eq!((inputs[0], inputs[3], most), (0.0, 0.0, 2), "nothing else: {inputs:?}");
+        // and each alone is still just itself
+        for g in [2, 5] {
+            hold_together(&mut gc, &mut u, &[], 0.0, 1.0);
+            let (_, most) = hold_together(&mut gc, &mut u, &[g], 0.6, 1.5);
+            assert_eq!(most, 1, "movement {g} alone read as a compound");
+        }
+        // it survives a save
+        let bytes = bincode::serialize(&gc.calibration()).unwrap();
+        let mut restored = GestureControl::muscle();
+        restored.restore(bincode::deserialize(&bytes).unwrap());
+        assert_eq!(restored.compounds(), gc.compounds());
+    }
+
+    #[test]
+    fn additive_compounds_need_no_pattern_of_their_own() {
+        let (mut gc, mut u) = calibrated(User::new(43), false);
+        for _ in 0..3 {
+            hold_together(&mut gc, &mut u, &[], 0.0, 1.0);
+            hold_together(&mut gc, &mut u, &[2, 5], 0.4, 1.5);
+        }
+        hold_together(&mut gc, &mut u, &[], 0.0, 1.0);
+        assert!(gc.compounds().is_empty(), "{:?}", gc.compounds());
+    }
+
+    #[test]
+    fn a_v5_calibration_still_loads() {
+        let (gc, _) = calibrated(User::new(44), false);
+        let c = gc.calibration();
+        let v5 = bincode::serialize(&(&c.rest, &c.postures, &c.posture_rest, &c.data, &c.templates, &c.level, &c.report)).unwrap();
+        let mut restored = GestureControl::muscle();
+        restored.restore(bincode::deserialize::<CalibrationV5<NUM_GESTURES>>(&v5).unwrap().into());
+        assert_eq!(restored.templates, gc.templates);
+    }
+
+    #[test]
+    fn a_v6_calibration_still_loads() {
+        let (gc, _) = calibrated(User::new(45), false);
+        let c = gc.calibration();
+        let v6 = bincode::serialize(&(&c.rest, &c.postures, &c.posture_rest, &c.data, &c.templates, &c.level, &c.report, &c.compounds))
+            .unwrap();
+        let mut restored = GestureControl::muscle();
+        restored.restore(bincode::deserialize::<CalibrationV6<NUM_GESTURES>>(&v6).unwrap().into());
+        assert_eq!(restored.templates, gc.templates);
+    }
+
+    #[test]
     fn calibration_saves_arrays_as_plain_tuples() {
         // the layout muscle-pair calibrations were saved in before the control was generic
         let (gc, _) = calibrated(User::new(34), false);
         let generic = bincode::serialize(&gc.calibration()).unwrap();
-        let plain = bincode::serialize(&(&gc.rest, &gc.postures, &gc.posture_rest, &gc.data, &gc.templates, &gc.level, &gc.report)).unwrap();
+        let plain = bincode::serialize(&(&gc.rest, &gc.postures, &gc.posture_rest, &gc.data, &gc.templates, &gc.level, &gc.report, &gc.compounds, &gc.feats)).unwrap();
         assert_eq!(generic, plain);
     }
 }
+
+#[cfg(test)]
+#[path = "replay_tests.rs"]
+mod replay;

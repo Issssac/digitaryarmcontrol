@@ -9,9 +9,9 @@
 const CROSSTALK = [[2, 0.6], [5, 0.4]];
 
 /**
- * Digit array (bipolar pairs, in channel order: flexors from the thumb side to
+ * Digit array (one electrode per site, in channel order: flexors from the thumb side to
  * the little-finger side, extensors in the same order, biceps, triceps): each
- * movement's share of activity on each pair. Each finger leans on its own site
+ * movement's share of activity on each electrode. Each finger leans on its own site
  * but spills onto its neighbours, and flexing braces the extensors a little
  * (and the other way round). Thumb flex / extend, index flex / extend,
  * ring + little flex / extend, bicep, tricep (as in gesture.rs's tests).

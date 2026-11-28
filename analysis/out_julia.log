@@ -1,0 +1,31 @@
+20261124-142454-5x0i-julia1: 4439 labelled windows (5s)
+windows per class/step: {'Thumb flex': {'hard': 53, 'medium': 243, 'train': 86}, 'Thumb extend': {'hard': 54, 'medium': 580}, 'Index flex': {'hard': 54, 'medium': 317}, 'Index extend': {'hard': 55, 'medium': 546}, 'Ring + little flex': {'hard': 53, 'medium': 126}, 'Ring + little extend': {'hard': 53, 'medium': 157}, 'Bicep': {'hard': 57, 'medium': 1182}, 'Tricep': {'hard': 55, 'medium': 455}, 'rest': {'rest': 313}}
+cleaning labels on the training split (hard holds unseen)...
+  round 0: kept 81% of windows, 19% changed
+  round 1: kept 84% of windows, 8% changed
+  round 2: kept 83% of windows, 5% changed
+
+held-out hard holds + rest, balanced accuracy:
+  lda_all_labels           0.532   {'Thumb flex': 0.151, 'Thumb extend': 0.907, 'Index flex': 0.0, 'Index extend': 0.127, 'Ring + little flex': 0.887, 'Ring + little extend': 0.528, 'Bicep': 1.0, 'Tricep': 0.364, 'rest': 0.823}
+  lda_cleaned              0.511   {'Thumb flex': 0.057, 'Thumb extend': 0.722, 'Index flex': 0.0, 'Index extend': 0.055, 'Ring + little flex': 0.774, 'Ring + little extend': 0.585, 'Bicep': 1.0, 'Tricep': 0.618, 'rest': 0.79}
+  ceiling_hard_half_vs_half 0.777   {'Thumb flex': 0.519, 'Thumb extend': 0.963, 'Index flex': 0.963, 'Index extend': 1.0, 'Ring + little flex': 0.481, 'Ring + little extend': 0.926, 'Bicep': 1.0, 'Tricep': 0.143, 'rest': 1.0}
+  contrastive_prototype    0.601   {'Thumb flex': 0.057, 'Thumb extend': 0.815, 'Index flex': 0.0, 'Index extend': 0.818, 'Ring + little flex': 0.717, 'Ring + little extend': 0.547, 'Bicep': 1.0, 'Tricep': 0.473, 'rest': 0.984}
+
+hits vs misses: embedding spread (1-|mean|), raw distance to hit median, raw frame-to-frame jitter
+  Thumb flex             n    94/ 235   emb  0.03 /  0.42   dist  3.49 /  5.34   jitter  2.84 /  3.32
+  Thumb extend           n   547/  33   emb  0.02 /  0.34   dist  3.23 /  5.51   jitter  2.84 /  3.31
+  Index flex             n   215/ 102   emb  0.03 /  0.41   dist  3.85 /  5.80   jitter  2.91 /  3.21
+  Index extend           n   386/ 160   emb  0.03 /  0.36   dist  4.41 /  5.73   jitter  3.00 /  3.24
+  Ring + little flex     n   101/  25   emb  0.03 /  0.30   dist  2.86 /  4.86   jitter  2.72 /  3.33
+  Ring + little extend   n   157/   0   emb  0.02 /   -     dist  3.15 /   -     jitter  2.93 /   -  
+  Bicep                  n  1120/  62   emb  0.04 /  0.15   dist  4.25 /  5.51   jitter  2.85 /  3.26
+  Tricep                 n   385/  70   emb  0.04 /  0.36   dist  4.76 /  9.06   jitter  3.20 /  3.92
+  rest                   n   251/   0   emb  0.02 /   -     dist  7.51 /   -     jitter  2.54 /   -  
+
+kept as hit, by coach check: {'Thumb flex': {'kept_when_coach_clean': 0.228, 'kept_when_coach_other': 0.306}, 'Thumb extend': {'kept_when_coach_clean': 0.979, 'kept_when_coach_other': 0.94}, 'Index flex': {'kept_when_coach_clean': 0.981, 'kept_when_coach_other': 0.532}, 'Index extend': {'kept_when_coach_clean': None, 'kept_when_coach_other': 0.733}, 'Ring + little flex': {'kept_when_coach_clean': 1.0, 'kept_when_coach_other': 0.785}, 'Ring + little extend': {'kept_when_coach_clean': 1.0, 'kept_when_coach_other': 1.0}, 'Bicep': {'kept_when_coach_clean': 1.0, 'kept_when_coach_other': 0.957}, 'Tricep': {'kept_when_coach_clean': 0.915, 'kept_when_coach_other': 0.929}}
+
+final model on all windows...
+  round 0: kept 80% of windows, 20% changed
+  round 1: kept 81% of windows, 10% changed
+  round 2: kept 80% of windows, 6% changed
+wrote analysis\out\julia1.json (386s)

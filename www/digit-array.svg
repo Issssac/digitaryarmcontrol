@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1320 730" width="1320" height="730" font-family="system-ui, 'Segoe UI', sans-serif">
-  <title>Digit array: eight bipolar electrode pairs and Cyton wiring</title>
+  <title>Digit array: eight electrodes against a shared REF, and Cyton wiring</title>
   <defs>
     <!-- arm silhouette in local coords: shoulder at top, lateral (thumb) side = -x -->
     <path id="arm" d="M -35 0 C -62 5 -68 50 -62 85 C -58 120 -55 180 -52 230 C -51 245 -58 265 -62 290
@@ -13,39 +13,34 @@
     </g>
   </defs>
   <rect width="1320" height="730" fill="#1a1c21"/>
-  <text x="30" y="42" font-size="20" font-weight="600" fill="#e3e6eb">Digit array · right arm · 8 bipolar pairs</text>
-  <text x="30" y="64" font-size="12.5" fill="#8b919c">Each channel is a pair of electrodes about 2 cm apart along the muscle, plus one BIAS electrode on bone. No shared REF: SRB is unused. Mirror everything for the left arm.</text>
+  <text x="30" y="42" font-size="20" font-weight="600" fill="#e3e6eb">Digit array · right arm · 8 electrodes + REF + BIAS</text>
+  <text x="30" y="64" font-size="12.5" fill="#8b919c">One electrode per channel on the muscle belly, all measured against one REF electrode on the elbow bone, plus BIAS on the wrist bone. Mirror everything for the left arm.</text>
   <text x="230" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">FRONT · PALM FORWARD</text>
   <g transform="translate(230 110)"><use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/></g>
   <text x="560" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c" text-anchor="middle">BACK</text>
   <g transform="translate(560 110) scale(-1 1)"><use href="#arm" xlink:href="#arm" fill="#2c3038" stroke="#4a505c" stroke-width="1.5"/></g>
-  <line x1="208" y1="440" x2="206" y2="466" stroke="#ff9f43" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="208" y="440" stroke="#ff9f43"/><use href="#el" xlink:href="#el" x="206" y="466" stroke="#ff9f43"/>
+  <use href="#el" xlink:href="#el" x="207" y="453" stroke="#ff9f43"/>
   <text x="164" y="457.0" font-size="12.5" font-weight="700" fill="#ff9f43" text-anchor="end">CH1</text>
-  <line x1="230" y1="428" x2="231" y2="454" stroke="#ffd166" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="230" y="428" stroke="#ffd166"/><use href="#el" xlink:href="#el" x="231" y="454" stroke="#ffd166"/>
+  <use href="#el" xlink:href="#el" x="230" y="441" stroke="#ffd166"/>
   <text x="231" y="420" font-size="12.5" font-weight="700" fill="#ffd166" text-anchor="middle">CH2</text>
-  <line x1="252" y1="436" x2="253" y2="462" stroke="#3ddc97" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="252" y="436" stroke="#3ddc97"/><use href="#el" xlink:href="#el" x="253" y="462" stroke="#3ddc97"/>
+  <use href="#el" xlink:href="#el" x="252" y="449" stroke="#3ddc97"/>
   <text x="292" y="453.0" font-size="12.5" font-weight="700" fill="#3ddc97" text-anchor="start">CH3</text>
-  <line x1="582" y1="490" x2="584" y2="516" stroke="#ff9f43" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="582" y="490" stroke="#ff9f43"/><use href="#el" xlink:href="#el" x="584" y="516" stroke="#ff9f43"/>
+  <use href="#el" xlink:href="#el" x="583" y="503" stroke="#ff9f43"/>
   <text x="622" y="507.0" font-size="12.5" font-weight="700" fill="#ff9f43" text-anchor="start">CH4</text>
-  <line x1="562" y1="432" x2="563" y2="458" stroke="#ffd166" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="562" y="432" stroke="#ffd166"/><use href="#el" xlink:href="#el" x="563" y="458" stroke="#ffd166"/>
+  <use href="#el" xlink:href="#el" x="562" y="445" stroke="#ffd166"/>
   <text x="602" y="449.0" font-size="12.5" font-weight="700" fill="#ffd166" text-anchor="start">CH5</text>
-  <line x1="540" y1="440" x2="538" y2="466" stroke="#3ddc97" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="540" y="440" stroke="#3ddc97"/><use href="#el" xlink:href="#el" x="538" y="466" stroke="#3ddc97"/>
+  <use href="#el" xlink:href="#el" x="539" y="453" stroke="#3ddc97"/>
   <text x="496" y="457.0" font-size="12.5" font-weight="700" fill="#3ddc97" text-anchor="end">CH6</text>
-  <line x1="228" y1="250" x2="228" y2="286" stroke="#4da3ff" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="228" y="250" stroke="#4da3ff"/><use href="#el" xlink:href="#el" x="228" y="286" stroke="#4da3ff"/>
+  <use href="#el" xlink:href="#el" x="228" y="268" stroke="#4da3ff"/>
   <text x="184" y="272.0" font-size="12.5" font-weight="700" fill="#4da3ff" text-anchor="end">CH7</text>
-  <line x1="560" y1="240" x2="560" y2="276" stroke="#b48cff" stroke-width="2" opacity=".7"/>
-  <use href="#el" xlink:href="#el" x="560" y="240" stroke="#b48cff"/><use href="#el" xlink:href="#el" x="560" y="276" stroke="#b48cff"/>
+  <use href="#el" xlink:href="#el" x="560" y="258" stroke="#b48cff"/>
   <text x="600" y="262.0" font-size="12.5" font-weight="700" fill="#b48cff" text-anchor="start">CH8</text>
   <use href="#el" xlink:href="#el" x="530" y="372" stroke="#e3e6eb"/>
-  <text x="482" y="376" font-size="12.5" font-weight="700" fill="#e3e6eb" text-anchor="end">BIAS</text>
+  <text x="482" y="376" font-size="12.5" font-weight="700" fill="#e3e6eb" text-anchor="end">REF</text>
   <text x="482" y="391" font-size="11" fill="#8b919c" text-anchor="end">elbow bone</text>
+  <use href="#el" xlink:href="#el" x="536" y="546" stroke="#e3e6eb"/>
+  <text x="488" y="550" font-size="12.5" font-weight="700" fill="#e3e6eb" text-anchor="end">BIAS</text>
+  <text x="488" y="565" font-size="11" fill="#8b919c" text-anchor="end">wrist bone, little-finger side</text>
   <text x="760" y="92" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CHANNEL · SITE · WHAT IT DRIVES</text>
   <rect x="760" y="96" width="6" height="40" rx="2" fill="#ff9f43"/>
   <text x="776" y="110" font-size="13.5" font-weight="600" fill="#e3e6eb">CH1 · Flexors · thumb side</text>
@@ -80,8 +75,8 @@
   <text x="776" y="518" font-size="11.5" fill="#8b919c">back of the upper arm, centre of the triceps</text>
   <text x="776" y="533" font-size="11.5" fill="#b48cff">Tricep → reach out</text>
   <text x="760" y="564" font-size="11" font-weight="600" letter-spacing="1" fill="#8b919c">CYTON WIRING</text>
-  <text x="760" y="584" font-size="12" fill="#c9ced6">Each channel: one electrode of its pair on the top pin (P), the other on the bottom pin (N).</text>
-  <text x="760" y="601" font-size="12" fill="#c9ced6">BIAS pin → the electrode on the elbow bone. SRB pins: nothing.</text>
-  <text x="760" y="618" font-size="12" fill="#c9ced6">Connect from the page with Digit array selected: it sets the board to bipolar (SRB2 off).</text>
-  <text x="760" y="635" font-size="12" fill="#c9ced6">In each pair, put the electrode nearer the elbow on N and the one nearer the wrist on P (either way works; keep it the same every time).</text>
+  <text x="760" y="584" font-size="12" fill="#c9ced6">Each channel's electrode → that channel's bottom pin (N). Top row (P) stays empty.</text>
+  <text x="760" y="601" font-size="12" fill="#c9ced6">REF (elbow bone) → bottom SRB pin. BIAS (wrist bone) → bottom BIAS pin.</text>
+  <text x="760" y="618" font-size="12" fill="#c9ced6">Connecting from the page turns SRB2 on, so every channel is measured against REF;</text>
+  <text x="760" y="635" font-size="12" fill="#c9ced6">the channel average is subtracted to cancel the hum REF puts on all of them.</text>
 </svg>
